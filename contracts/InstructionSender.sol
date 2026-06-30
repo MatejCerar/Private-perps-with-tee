@@ -5,12 +5,12 @@ pragma solidity ^0.8.27;
 import { ITeeExtensionRegistry } from "./interfaces/ITeeExtensionRegistry.sol";
 import { ITeeMachineRegistry } from "./interfaces/ITeeMachineRegistry.sol";
 
-/// @title HelloWorldInstructionSender
+/// @title HyperliquidInstructionSender
 /// @author Flare Foundation
 /// @notice Hello World example — on-chain entry point for sending instructions to the TEE.
 ///
 /// DO NOT MODIFY: constructor, setExtensionId(), _getExtensionId()
-contract HelloWorldInstructionSender {
+contract HyperliquidInstructionSender {
     /// @notice Operation type for greeting actions (SAY_HELLO, SAY_GOODBYE).
     // forge-lint: disable-next-line(unsafe-typecast)
     bytes32 public constant OP_TYPE_GREETING = bytes32("GREETING");

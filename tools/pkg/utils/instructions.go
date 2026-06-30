@@ -5,7 +5,7 @@ import (
 	"math/big"
 	"time"
 
-	"extension-scaffold/tools/pkg/contracts/helloworld"
+	"extension-scaffold/tools/pkg/contracts/hyperliquid"
 	"extension-scaffold/tools/pkg/fccutils"
 	"extension-scaffold/tools/pkg/support"
 
@@ -16,7 +16,7 @@ import (
 	"github.com/pkg/errors"
 )
 
-func DeployInstructionSender(s *support.Support) (common.Address, *helloworld.HelloWorldInstructionSender, error) {
+func DeployInstructionSender(s *support.Support) (common.Address, *hyperliquid.HyperliquidInstructionSender, error) {
 	opts, err := bind.NewKeyedTransactorWithChainID(s.Prv, s.ChainID)
 	if err != nil {
 		return common.Address{}, nil, errors.Errorf("failed to create transactor: %s", err)
@@ -24,7 +24,7 @@ func DeployInstructionSender(s *support.Support) (common.Address, *helloworld.He
 
 	// Both registry args are the FlareTeeManager diamond proxy: the diamond
 	// routes ExtensionManager and MachineManager calls to the right facets.
-	address, tx, contract, err := helloworld.DeployHelloWorldInstructionSender(
+	address, tx, contract, err := hyperliquid.DeployHyperliquidInstructionSender(
 		opts, s.ChainClient, s.Addresses.FlareTeeManager, s.Addresses.FlareTeeManager,
 	)
 	if err != nil {
@@ -46,7 +46,7 @@ func DeployInstructionSender(s *support.Support) (common.Address, *helloworld.He
 }
 
 func SetExtensionId(s *support.Support, instructionSenderAddress common.Address) error {
-	sender, err := helloworld.NewHelloWorldInstructionSender(instructionSenderAddress, s.ChainClient)
+	sender, err := hyperliquid.NewHyperliquidInstructionSender(instructionSenderAddress, s.ChainClient)
 	if err != nil {
 		return errors.Errorf("failed to bind contract: %s", err)
 	}
@@ -60,7 +60,7 @@ func SetExtensionId(s *support.Support, instructionSenderAddress common.Address)
 	if err != nil {
 		reason := fccutils.DecodeRevertReason(err)
 		if reason == "" {
-			parsed, _ := helloworld.HelloWorldInstructionSenderMetaData.GetAbi()
+			parsed, _ := hyperliquid.HyperliquidInstructionSenderMetaData.GetAbi()
 			if parsed != nil {
 				callData, packErr := parsed.Pack("setExtensionId")
 				if packErr == nil {
@@ -83,7 +83,7 @@ func SetExtensionId(s *support.Support, instructionSenderAddress common.Address)
 	}
 
 	if receipt.Status != types.ReceiptStatusSuccessful {
-		parsed, _ := helloworld.HelloWorldInstructionSenderMetaData.GetAbi()
+		parsed, _ := hyperliquid.HyperliquidInstructionSenderMetaData.GetAbi()
 		if parsed != nil {
 			callData, packErr := parsed.Pack("setExtensionId")
 			if packErr == nil {
@@ -103,7 +103,7 @@ func SetExtensionId(s *support.Support, instructionSenderAddress common.Address)
 }
 
 func SendSayHello(s *support.Support, instructionSenderAddress common.Address, message []byte) (common.Hash, common.Hash, error) {
-	sender, err := helloworld.NewHelloWorldInstructionSender(instructionSenderAddress, s.ChainClient)
+	sender, err := hyperliquid.NewHyperliquidInstructionSender(instructionSenderAddress, s.ChainClient)
 	if err != nil {
 		return common.Hash{}, common.Hash{}, errors.Errorf("failed to bind contract: %s", err)
 	}
@@ -118,7 +118,7 @@ func SendSayHello(s *support.Support, instructionSenderAddress common.Address, m
 	if err != nil {
 		reason := fccutils.DecodeRevertReason(err)
 		if reason == "" {
-			parsed, _ := helloworld.HelloWorldInstructionSenderMetaData.GetAbi()
+			parsed, _ := hyperliquid.HyperliquidInstructionSenderMetaData.GetAbi()
 			if parsed != nil {
 				callData, packErr := parsed.Pack("sendSayHello", message)
 				if packErr == nil {
@@ -142,7 +142,7 @@ func SendSayHello(s *support.Support, instructionSenderAddress common.Address, m
 	}
 
 	if receipt.Status != 1 {
-		parsed, _ := helloworld.HelloWorldInstructionSenderMetaData.GetAbi()
+		parsed, _ := hyperliquid.HyperliquidInstructionSenderMetaData.GetAbi()
 		if parsed != nil {
 			callData, packErr := parsed.Pack("sendSayHello", message)
 			if packErr == nil {
@@ -172,7 +172,7 @@ func SendSayHello(s *support.Support, instructionSenderAddress common.Address, m
 }
 
 func SendSayGoodbye(s *support.Support, instructionSenderAddress common.Address, name string, reason string) (common.Hash, common.Hash, error) {
-	sender, err := helloworld.NewHelloWorldInstructionSender(instructionSenderAddress, s.ChainClient)
+	sender, err := hyperliquid.NewHyperliquidInstructionSender(instructionSenderAddress, s.ChainClient)
 	if err != nil {
 		return common.Hash{}, common.Hash{}, errors.Errorf("failed to bind contract: %s", err)
 	}

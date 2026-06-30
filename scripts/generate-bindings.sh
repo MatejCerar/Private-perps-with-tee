@@ -10,8 +10,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # --- Contract name and Go package ---
-CONTRACT_NAME="HelloWorldInstructionSender"
-GO_PKG="helloworld"
+CONTRACT_NAME="HyperliquidInstructionSender"
+GO_PKG="hyperliquid"
 BINDINGS_DIR="$PROJECT_DIR/tools/pkg/contracts/$GO_PKG"
 
 cd "$PROJECT_DIR"
