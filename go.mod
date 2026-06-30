@@ -6,6 +6,8 @@ require (
 	github.com/ethereum/go-ethereum v1.17.2
 	github.com/flare-foundation/go-flare-common v1.2.2-0.20260623111601-c573c79c0924
 	github.com/flare-foundation/tee-node v0.0.0
+	github.com/sonirico/go-hyperliquid v0.33.1
+	golang.org/x/crypto v0.53.0
 )
 
 require (
@@ -46,7 +48,6 @@ require (
 	github.com/prometheus/procfs v0.19.2 // indirect
 	github.com/rs/zerolog v1.34.0 // indirect
 	github.com/shirou/gopsutil v3.21.11+incompatible // indirect
-	github.com/sonirico/go-hyperliquid v0.33.1 // indirect
 	github.com/sonirico/vago v0.11.4 // indirect
 	github.com/sonirico/vago/lol v0.1.0 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
@@ -66,7 +67,6 @@ require (
 	go.opentelemetry.io/otel/trace v1.40.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect
-	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/exp v0.0.0-20250911091902-df9299821621 // indirect
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
