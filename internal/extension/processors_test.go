@@ -117,3 +117,21 @@ func TestProcessSpotOrderClassTransfersWhenSpotLow(t *testing.T) {
 		t.Fatalf("expected one class transfer, got %+v", fa.Transfers)
 	}
 }
+
+func TestProcessCancel(t *testing.T) {
+	seed := bytes.Repeat([]byte{0x01}, 32)
+	user := common.HexToAddress("0x5555555555555555555555555555555555555555")
+	e := NewWith(0, 0, &hl.FakeFactory{}, &hl.FakeAccount{Addr: "0xT"}, "0xT", seed)
+	acct, _ := e.accountFor(user)
+	fa := acct.(*hl.FakeAccount)
+
+	msg := envelope(t, user, types.CancelRequest{Coin: "BTC", OrderID: 999})
+	a, df := actionFor(msg)
+	res := e.processCancel(a, df)
+	if res.Status != 1 {
+		t.Fatalf("status = %d", res.Status)
+	}
+	if len(fa.Cancels) != 1 || fa.Cancels[0] != 999 {
+		t.Fatalf("cancel not recorded: %+v", fa.Cancels)
+	}
+}

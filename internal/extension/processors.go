@@ -122,7 +122,26 @@ func (e *Extension) processPlaceOrder(a teetypes.Action, df *instruction.DataFix
 }
 
 func (e *Extension) processCancel(a teetypes.Action, df *instruction.DataFixed) teetypes.ActionResult {
-	return buildResult(a, df, nil, 0, errNotImplemented)
+	user, payload, err := types.DecodeEnvelope(df.OriginalMessage)
+	if err != nil {
+		return buildResult(a, df, nil, 0, err)
+	}
+	var req types.CancelRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return buildResult(a, df, nil, 0, fmt.Errorf("decoding cancel: %w", err))
+	}
+	if req.Coin == "" || req.OrderID == 0 {
+		return buildResult(a, df, nil, 0, fmt.Errorf("coin and orderId required"))
+	}
+	acct, err := e.accountFor(user)
+	if err != nil {
+		return buildResult(a, df, nil, 0, err)
+	}
+	if err := acct.Cancel(context.Background(), req.Coin, req.OrderID); err != nil {
+		return buildResult(a, df, nil, 0, fmt.Errorf("cancelling: %w", err))
+	}
+	data, _ := json.Marshal(types.CancelResponse{Cancelled: true})
+	return buildResult(a, df, data, 1, nil)
 }
 
 func (e *Extension) processWithdraw(a teetypes.Action, df *instruction.DataFixed) teetypes.ActionResult {
