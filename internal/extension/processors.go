@@ -14,8 +14,6 @@ import (
 	teetypes "github.com/flare-foundation/tee-node/pkg/types"
 )
 
-var errNotImplemented = fmt.Errorf("not implemented")
-
 func (e *Extension) processDeposit(a teetypes.Action, df *instruction.DataFixed) teetypes.ActionResult {
 	user, payload, err := types.DecodeEnvelope(df.OriginalMessage)
 	if err != nil {
@@ -145,5 +143,30 @@ func (e *Extension) processCancel(a teetypes.Action, df *instruction.DataFixed) 
 }
 
 func (e *Extension) processWithdraw(a teetypes.Action, df *instruction.DataFixed) teetypes.ActionResult {
-	return buildResult(a, df, nil, 0, errNotImplemented)
+	user, payload, err := types.DecodeEnvelope(df.OriginalMessage)
+	if err != nil {
+		return buildResult(a, df, nil, 0, err)
+	}
+	var req types.WithdrawRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return buildResult(a, df, nil, 0, fmt.Errorf("decoding withdraw: %w", err))
+	}
+	if req.UsdAmount <= 0 {
+		return buildResult(a, df, nil, 0, fmt.Errorf("usdAmount must be positive"))
+	}
+	if err := e.led.Debit(user, req.UsdAmount); err != nil {
+		return buildResult(a, df, nil, 0, err)
+	}
+	acct, err := e.accountFor(user)
+	if err != nil {
+		// refund the ledger debit on derivation failure
+		e.led.Credit(user, req.UsdAmount)
+		return buildResult(a, df, nil, 0, err)
+	}
+	if err := acct.SendUSD(context.Background(), e.treasuryAddr, req.UsdAmount); err != nil {
+		e.led.Credit(user, req.UsdAmount) // refund on HL failure
+		return buildResult(a, df, nil, 0, fmt.Errorf("returning to treasury: %w", err))
+	}
+	data, _ := json.Marshal(types.WithdrawResponse{BalanceUsd: e.led.Balance(user)})
+	return buildResult(a, df, data, 1, nil)
 }

@@ -135,3 +135,38 @@ func TestProcessCancel(t *testing.T) {
 		t.Fatalf("cancel not recorded: %+v", fa.Cancels)
 	}
 }
+
+func TestProcessWithdrawDebitsAndReturnsToTreasury(t *testing.T) {
+	seed := bytes.Repeat([]byte{0x01}, 32)
+	user := common.HexToAddress("0x6666666666666666666666666666666666666666")
+	e := NewWith(0, 0, &hl.FakeFactory{}, &hl.FakeAccount{Addr: "0xTREASURY"}, "0xTREASURY", seed)
+	acct, _ := e.accountFor(user)
+	fa := acct.(*hl.FakeAccount)
+	e.led.Credit(user, 200)
+
+	msg := envelope(t, user, types.WithdrawRequest{UsdAmount: 80})
+	a, df := actionFor(msg)
+	res := e.processWithdraw(a, df)
+	if res.Status != 1 {
+		t.Fatalf("status = %d log = %s", res.Status, res.Log)
+	}
+	if e.led.Balance(user) != 120 {
+		t.Fatalf("balance = %v", e.led.Balance(user))
+	}
+	if len(fa.SentUSD) != 1 || fa.SentUSD[0].Dest != "0xTREASURY" || fa.SentUSD[0].Amount != 80 {
+		t.Fatalf("treasury return wrong: %+v", fa.SentUSD)
+	}
+}
+
+func TestProcessWithdrawRejectsOverBalance(t *testing.T) {
+	seed := bytes.Repeat([]byte{0x01}, 32)
+	user := common.HexToAddress("0x7777777777777777777777777777777777777777")
+	e := NewWith(0, 0, &hl.FakeFactory{}, &hl.FakeAccount{Addr: "0xTREASURY"}, "0xTREASURY", seed)
+	e.led.Credit(user, 10)
+	msg := envelope(t, user, types.WithdrawRequest{UsdAmount: 50})
+	a, df := actionFor(msg)
+	res := e.processWithdraw(a, df)
+	if res.Status != 0 {
+		t.Fatalf("expected rejection, got %d", res.Status)
+	}
+}
