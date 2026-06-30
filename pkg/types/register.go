@@ -2,27 +2,16 @@ package types
 
 import "extension-scaffold/pkg/decoder"
 
-// RegisterDecoders registers all type decoders for this extension.
-// Extension developers: add new registrations here for each OPType/OPCommand.
+// RegisterDecoders registers JSON decoders for HL command messages and results.
 func RegisterDecoders(r *decoder.Registry) {
-	// SAY_HELLO message (JSON)
-	r.Register(
-		decoder.RegistryKey{OPType: "GREETING", OPCommand: "SAY_HELLO", Kind: decoder.KindMessage},
-		decoder.NewJSONDecoder[SayHelloRequest](),
-	)
-	// SAY_HELLO result (JSON)
-	r.Register(
-		decoder.RegistryKey{OPType: "GREETING", OPCommand: "SAY_HELLO", Kind: decoder.KindResult},
-		decoder.NewJSONDecoder[SayHelloResponse](),
-	)
-	// SAY_GOODBYE message (ABI-encoded)
-	r.Register(
-		decoder.RegistryKey{OPType: "GREETING", OPCommand: "SAY_GOODBYE", Kind: decoder.KindMessage},
-		decoder.NewABIDecoder[SayGoodbyeRequest](SayGoodbyeMessageArg),
-	)
-	// SAY_GOODBYE result (JSON)
-	r.Register(
-		decoder.RegistryKey{OPType: "GREETING", OPCommand: "SAY_GOODBYE", Kind: decoder.KindResult},
-		decoder.NewJSONDecoder[SayGoodbyeResponse](),
-	)
+	// messages
+	r.Register(decoder.RegistryKey{OPType: "HL", OPCommand: "DEPOSIT", Kind: decoder.KindMessage}, decoder.NewJSONDecoder[DepositRequest]())
+	r.Register(decoder.RegistryKey{OPType: "HL", OPCommand: "PLACE_ORDER", Kind: decoder.KindMessage}, decoder.NewJSONDecoder[PlaceOrderRequest]())
+	r.Register(decoder.RegistryKey{OPType: "HL", OPCommand: "CANCEL", Kind: decoder.KindMessage}, decoder.NewJSONDecoder[CancelRequest]())
+	r.Register(decoder.RegistryKey{OPType: "HL", OPCommand: "WITHDRAW", Kind: decoder.KindMessage}, decoder.NewJSONDecoder[WithdrawRequest]())
+	// results
+	r.Register(decoder.RegistryKey{OPType: "HL", OPCommand: "DEPOSIT", Kind: decoder.KindResult}, decoder.NewJSONDecoder[DepositResponse]())
+	r.Register(decoder.RegistryKey{OPType: "HL", OPCommand: "PLACE_ORDER", Kind: decoder.KindResult}, decoder.NewJSONDecoder[OrderResponse]())
+	r.Register(decoder.RegistryKey{OPType: "HL", OPCommand: "CANCEL", Kind: decoder.KindResult}, decoder.NewJSONDecoder[CancelResponse]())
+	r.Register(decoder.RegistryKey{OPType: "HL", OPCommand: "WITHDRAW", Kind: decoder.KindResult}, decoder.NewJSONDecoder[WithdrawResponse]())
 }
