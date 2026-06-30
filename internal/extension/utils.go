@@ -1,9 +1,11 @@
 package extension
 
 import (
+	"bytes"
 	"encoding/json"
 	"extension-scaffold/internal/config"
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
@@ -56,4 +58,43 @@ func getLogFromBody(body []byte) string {
 		return string(body)
 	}
 	return ar.Log
+}
+
+type processorFunc func(teetypes.Action, *instruction.DataFixed) teetypes.ActionResult
+
+func (e *Extension) handleAsync(action teetypes.Action, df *instruction.DataFixed, processor processorFunc) (int, []byte) {
+	ar := teetypes.ActionResult{
+		ID:            action.Data.ID,
+		SubmissionTag: action.Data.SubmissionTag,
+		Version:       config.Version,
+		OPType:        df.OPType,
+		OPCommand:     df.OPCommand,
+		Status:        2,
+		Log:           "pending",
+	}
+	pending, _ := json.Marshal(ar)
+
+	go func(a teetypes.Action, d *instruction.DataFixed) {
+		result := processor(a, d)
+		if err := sendResult(e.signPort, result); err != nil {
+			logger.Errorf("posting result %s: %v", result.ID, err)
+		}
+	}(action, df)
+
+	return http.StatusOK, pending
+}
+
+func sendResult(nodePort int, ar teetypes.ActionResult) error {
+	url := fmt.Sprintf("http://localhost:%d/result", nodePort)
+	b, _ := json.Marshal(ar)
+	resp, err := http.Post(url, "application/json", bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("node /result returned %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
 }
