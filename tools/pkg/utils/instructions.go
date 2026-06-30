@@ -102,109 +102,71 @@ func SetExtensionId(s *support.Support, instructionSenderAddress common.Address)
 	return nil
 }
 
-func SendSayHello(s *support.Support, instructionSenderAddress common.Address, message []byte) (common.Hash, common.Hash, error) {
-	sender, err := hyperliquid.NewHyperliquidInstructionSender(instructionSenderAddress, s.ChainClient)
-	if err != nil {
-		return common.Hash{}, common.Hash{}, errors.Errorf("failed to bind contract: %s", err)
-	}
-
+func sendHL(
+	s *support.Support,
+	instructionSenderAddress common.Address,
+	call func(opts *bind.TransactOpts, payload []byte) (*types.Transaction, error),
+	payload []byte,
+) (common.Hash, common.Hash, error) {
 	opts, err := bind.NewKeyedTransactorWithChainID(s.Prv, s.ChainID)
 	if err != nil {
 		return common.Hash{}, common.Hash{}, errors.Errorf("failed to create transactor: %s", err)
 	}
-	opts.Value = big.NewInt(1000000) // Instruction fee in wei — must match registry's required fee
+	opts.Value = big.NewInt(1000000) // instruction fee in wei — must match registry's required fee
 
-	tx, err := sender.SendSayHello(opts, message)
+	tx, err := call(opts, payload)
 	if err != nil {
-		reason := fccutils.DecodeRevertReason(err)
-		if reason == "" {
-			parsed, _ := hyperliquid.HyperliquidInstructionSenderMetaData.GetAbi()
-			if parsed != nil {
-				callData, packErr := parsed.Pack("sendSayHello", message)
-				if packErr == nil {
-					from := crypto.PubkeyToAddress(s.Prv.PublicKey)
-					reason = fccutils.SimulateAndDecodeRevert(
-						s.ChainClient, from, instructionSenderAddress,
-						big.NewInt(1000000), callData,
-					)
-				}
-			}
-		}
-		if reason != "" {
-			return common.Hash{}, common.Hash{}, errors.Errorf("failed to send instruction: %s (revert reason: %s)", err, reason)
-		}
 		return common.Hash{}, common.Hash{}, errors.Errorf("failed to send instruction: %s", err)
 	}
-
 	receipt, err := bind.WaitMined(context.Background(), s.ChainClient, tx)
 	if err != nil {
 		return common.Hash{}, common.Hash{}, errors.Errorf("failed waiting for transaction: %s", err)
 	}
-
 	if receipt.Status != 1 {
-		parsed, _ := hyperliquid.HyperliquidInstructionSenderMetaData.GetAbi()
-		if parsed != nil {
-			callData, packErr := parsed.Pack("sendSayHello", message)
-			if packErr == nil {
-				from := crypto.PubkeyToAddress(s.Prv.PublicKey)
-				reason := fccutils.SimulateAndDecodeRevert(
-					s.ChainClient, from, instructionSenderAddress,
-					big.NewInt(1000000), callData,
-				)
-				if reason != "" {
-					return common.Hash{}, common.Hash{}, errors.Errorf("transaction failed with status %d (revert reason: %s)", receipt.Status, reason)
-				}
-			}
-		}
 		return common.Hash{}, common.Hash{}, errors.Errorf("transaction failed with status: %d", receipt.Status)
 	}
-
 	if len(receipt.Logs) == 0 {
 		return common.Hash{}, common.Hash{}, errors.New("no logs found in receipt")
 	}
-
-	instructionSent, err := s.TeeVerification.ParseTeeInstructionsSent(*receipt.Logs[0])
+	sent, err := s.TeeVerification.ParseTeeInstructionsSent(*receipt.Logs[0])
 	if err != nil {
 		return common.Hash{}, common.Hash{}, errors.Errorf("failed to parse TeeInstructionsSent event: %s", err)
 	}
-
-	return instructionSent.InstructionId, receipt.TxHash, nil
+	return sent.InstructionId, receipt.TxHash, nil
 }
 
-func SendSayGoodbye(s *support.Support, instructionSenderAddress common.Address, name string, reason string) (common.Hash, common.Hash, error) {
-	sender, err := hyperliquid.NewHyperliquidInstructionSender(instructionSenderAddress, s.ChainClient)
+func bindSender(s *support.Support, addr common.Address) (*hyperliquid.HyperliquidInstructionSender, error) {
+	return hyperliquid.NewHyperliquidInstructionSender(addr, s.ChainClient)
+}
+
+func SendDeposit(s *support.Support, addr common.Address, payload []byte) (common.Hash, common.Hash, error) {
+	c, err := bindSender(s, addr)
 	if err != nil {
-		return common.Hash{}, common.Hash{}, errors.Errorf("failed to bind contract: %s", err)
+		return common.Hash{}, common.Hash{}, err
 	}
+	return sendHL(s, addr, c.Deposit, payload)
+}
 
-	opts, err := bind.NewKeyedTransactorWithChainID(s.Prv, s.ChainID)
+func SendPlaceOrder(s *support.Support, addr common.Address, payload []byte) (common.Hash, common.Hash, error) {
+	c, err := bindSender(s, addr)
 	if err != nil {
-		return common.Hash{}, common.Hash{}, errors.Errorf("failed to create transactor: %s", err)
+		return common.Hash{}, common.Hash{}, err
 	}
-	opts.Value = big.NewInt(1000000) // Instruction fee in wei — must match registry's required fee
+	return sendHL(s, addr, c.PlaceOrder, payload)
+}
 
-	tx, err := sender.SendSayGoodbye(opts, name, reason)
+func SendCancel(s *support.Support, addr common.Address, payload []byte) (common.Hash, common.Hash, error) {
+	c, err := bindSender(s, addr)
 	if err != nil {
-		return common.Hash{}, common.Hash{}, errors.Errorf("failed to send instruction: %s", err)
+		return common.Hash{}, common.Hash{}, err
 	}
+	return sendHL(s, addr, c.Cancel, payload)
+}
 
-	receipt, err := bind.WaitMined(context.Background(), s.ChainClient, tx)
+func SendWithdraw(s *support.Support, addr common.Address, payload []byte) (common.Hash, common.Hash, error) {
+	c, err := bindSender(s, addr)
 	if err != nil {
-		return common.Hash{}, common.Hash{}, errors.Errorf("failed waiting for transaction: %s", err)
+		return common.Hash{}, common.Hash{}, err
 	}
-
-	if receipt.Status != 1 {
-		return common.Hash{}, common.Hash{}, errors.Errorf("transaction failed with status: %d", receipt.Status)
-	}
-
-	if len(receipt.Logs) == 0 {
-		return common.Hash{}, common.Hash{}, errors.New("no logs found in receipt")
-	}
-
-	instructionSent, err := s.TeeVerification.ParseTeeInstructionsSent(*receipt.Logs[0])
-	if err != nil {
-		return common.Hash{}, common.Hash{}, errors.Errorf("failed to parse TeeInstructionsSent event: %s", err)
-	}
-
-	return instructionSent.InstructionId, receipt.TxHash, nil
+	return sendHL(s, addr, c.Withdraw, payload)
 }
