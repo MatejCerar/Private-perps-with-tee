@@ -7,21 +7,29 @@ import { ITeeMachineRegistry } from "./interfaces/ITeeMachineRegistry.sol";
 
 /// @title HyperliquidInstructionSender
 /// @author Flare Foundation
-/// @notice Hello World example — on-chain entry point for sending instructions to the TEE.
+/// @notice On-chain entry point for sending Hyperliquid instructions to the TEE.
 ///
 /// DO NOT MODIFY: constructor, setExtensionId(), _getExtensionId()
 contract HyperliquidInstructionSender {
-    /// @notice Operation type for greeting actions (SAY_HELLO, SAY_GOODBYE).
+    /// @notice Operation type for Hyperliquid actions.
     // forge-lint: disable-next-line(unsafe-typecast)
-    bytes32 public constant OP_TYPE_GREETING = bytes32("GREETING");
+    bytes32 public constant OP_TYPE_HL = bytes32("HL");
 
-    /// @notice Command for the SAY_HELLO action.
+    /// @notice Command for the DEPOSIT action.
     // forge-lint: disable-next-line(unsafe-typecast)
-    bytes32 public constant OP_COMMAND_SAY_HELLO = bytes32("SAY_HELLO");
+    bytes32 public constant OP_COMMAND_DEPOSIT = bytes32("DEPOSIT");
 
-    /// @notice Command for the SAY_GOODBYE action.
+    /// @notice Command for the PLACE_ORDER action.
     // forge-lint: disable-next-line(unsafe-typecast)
-    bytes32 public constant OP_COMMAND_SAY_GOODBYE = bytes32("SAY_GOODBYE");
+    bytes32 public constant OP_COMMAND_PLACE_ORDER = bytes32("PLACE_ORDER");
+
+    /// @notice Command for the CANCEL action.
+    // forge-lint: disable-next-line(unsafe-typecast)
+    bytes32 public constant OP_COMMAND_CANCEL = bytes32("CANCEL");
+
+    /// @notice Command for the WITHDRAW action.
+    // forge-lint: disable-next-line(unsafe-typecast)
+    bytes32 public constant OP_COMMAND_WITHDRAW = bytes32("WITHDRAW");
 
     /// @notice Reference to the TEE extension registry contract.
     ITeeExtensionRegistry public immutable TEE_EXTENSION_REGISTRY;
@@ -33,12 +41,6 @@ contract HyperliquidInstructionSender {
     uint256 private constant FIRST_PUBLIC_EXTENSION_ID = 0x10000; // 65536
 
     uint256 private _extensionId;
-
-    /// @notice Payload for the SAY_GOODBYE instruction.
-    struct SayGoodbyeMessage {
-        string name;
-        string reason;
-    }
 
     /// @notice Initializes the contract with registry addresses.
     /// @param _teeExtensionRegistry Address of the TEE extension registry.
@@ -70,48 +72,48 @@ contract HyperliquidInstructionSender {
         revert("Extension ID not found.");
     }
 
-    /// @notice Sends a SAY_HELLO instruction to the TEE.
-    /// @param _message JSON-encoded payload (e.g. {"name": "Alice"}).
-    function sendSayHello(bytes calldata _message) external payable {
+    /// @notice Emits an HL instruction, embedding msg.sender so the TEE can
+    /// derive the caller's dedicated Hyperliquid account.
+    function _send(bytes32 opCommand, bytes memory _payload) internal {
         address[] memory teeIds = TEE_MACHINE_REGISTRY.getRandomTeeIds(_getExtensionId(), 1);
         address[] memory cosigners = new address[](0);
 
+        bytes memory message = abi.encode(msg.sender, _payload);
+
         ITeeExtensionRegistry.TeeInstructionParams memory params = ITeeExtensionRegistry.TeeInstructionParams({
-            opType: OP_TYPE_GREETING,
-            opCommand: OP_COMMAND_SAY_HELLO,
-            message: _message,
+            opType: OP_TYPE_HL,
+            opCommand: opCommand,
+            message: message,
             cosigners: cosigners,
             cosignersThreshold: 0,
             claimBackAddress: msg.sender
         });
 
-
-        TEE_EXTENSION_REGISTRY.sendInstructions{value: msg.value}(
-            teeIds,
-            params
-        );
+        TEE_EXTENSION_REGISTRY.sendInstructions{value: msg.value}(teeIds, params);
     }
 
-    /// @notice Sends a SAY_GOODBYE instruction to the TEE.
-    /// @param _name The name of the person to say goodbye to.
-    /// @param _reason The reason for saying goodbye.
-    function sendSayGoodbye(string calldata _name, string calldata _reason) external payable {
-        address[] memory teeIds = TEE_MACHINE_REGISTRY.getRandomTeeIds(_getExtensionId(), 1);
-        address[] memory cosigners = new address[](0);
+    /// @notice Credit the caller's TEE-managed account (mock deposit in v1).
+    /// @param _payload JSON e.g. {"usdAmount":100}
+    function deposit(bytes calldata _payload) external payable {
+        _send(OP_COMMAND_DEPOSIT, _payload);
+    }
 
-        ITeeExtensionRegistry.TeeInstructionParams memory params = ITeeExtensionRegistry.TeeInstructionParams({
-            opType: OP_TYPE_GREETING,
-            opCommand: OP_COMMAND_SAY_GOODBYE,
-            message: abi.encode(SayGoodbyeMessage({name: _name, reason: _reason})),
-            cosigners: cosigners,
-            cosignersThreshold: 0,
-            claimBackAddress: msg.sender
-        });
+    /// @notice Place a spot or perp order.
+    /// @param _payload JSON e.g. {"market":"perp","coin":"BTC","isBuy":true,"orderType":"market","size":0.01,"leverage":5}
+    function placeOrder(bytes calldata _payload) external payable {
+        _send(OP_COMMAND_PLACE_ORDER, _payload);
+    }
 
-        TEE_EXTENSION_REGISTRY.sendInstructions{value: msg.value}(
-            teeIds,
-            params
-        );
+    /// @notice Cancel an open order.
+    /// @param _payload JSON e.g. {"coin":"BTC","orderId":123}
+    function cancel(bytes calldata _payload) external payable {
+        _send(OP_COMMAND_CANCEL, _payload);
+    }
+
+    /// @notice Withdraw USD from the caller's TEE-managed account (internal stub in v1).
+    /// @param _payload JSON e.g. {"usdAmount":50}
+    function withdraw(bytes calldata _payload) external payable {
+        _send(OP_COMMAND_WITHDRAW, _payload);
     }
 
     /// @notice Returns the cached extension ID, reverting if not yet set.
