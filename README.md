@@ -449,6 +449,77 @@ docker compose -f docker-compose.yaml -f docker-compose.coston2.yaml down
 | Normal proxy | `localhost:6662` | `https://tee-proxy-coston2-1.flare.rocks` |
 | Docker command | `docker compose up -d --build` | `docker compose -f docker-compose.yaml -f docker-compose.coston2.yaml up -d --build` |
 
+## Hyperliquid Controlled Accounts
+
+This repository implements a Flare Compute Extension that lets users trade on Hyperliquid (spot + perps) by sending plain on-chain instructions on Flare. The TEE holds a dedicated Hyperliquid account per user, executes their actions on Hyperliquid's testnet, and the user never bridges funds off Flare.
+
+### Seeding the treasury (testnet setup)
+
+The extension uses a single treasury HL account that is funded once from the Hyperliquid testnet faucet. On a `DEPOSIT` instruction the TEE transfers mock USDC from the treasury to the user's derived HL account.
+
+To seed the treasury:
+
+1. Generate a dedicated keypair for `HL_TREASURY_KEY` (or use an existing funded one).
+2. Visit [app.hyperliquid-testnet.xyz/drip](https://app.hyperliquid-testnet.xyz/drip) and claim the faucet for that address. The faucet provides **1,000 mock USDC**, one-time per address.
+3. Note: faucet use requires a **$5 mainnet activation** of the address on Hyperliquid mainnet. This is a one-time Hyperliquid requirement, not a Flare requirement.
+4. Set `HL_TREASURY_KEY` in your `.env` to the private key (hex) of that funded address.
+
+### Environment variables
+
+Copy `.env.example` and fill in the Hyperliquid-specific values:
+
+| Variable | Default | Description |
+|---|---|---|
+| `HYPERLIQUID_URL` | `https://api.hyperliquid-testnet.xyz` | Hyperliquid API endpoint; signing domain is determined by this URL |
+| `HL_MASTER_SEED` | (required, no default) | 32+ byte hex seed used to derive per-user HL keys — **KEEP SECRET** |
+| `HL_TREASURY_KEY` | (required, no default) | Private key (hex) of the faucet-funded treasury HL account — **KEEP SECRET** |
+| `HL_MAX_DEPOSIT_USD` | `1000` | Maximum USD amount for a single `DEPOSIT` instruction (guardrail) |
+| `HL_MAX_TOTAL_DEPOSIT_USD` | `5000` | Maximum total USD ever credited from the treasury (global cap) |
+
+> Both `HL_MASTER_SEED` and `HL_TREASURY_KEY` are secrets. Never commit real values. Leave them empty in `.env.example`.
+
+### Instruction set
+
+The extension uses OPType `HL`, sub-routed by OPCommand. Send instructions via `HyperliquidInstructionSender.sol` on Flare / Coston2.
+
+| OPCommand | Contract function | JSON payload (after `msg.sender`) | TEE action |
+|---|---|---|---|
+| `DEPOSIT` | `deposit(uint256 usdAmount)` | `{"usdAmount": N}` | Treasury → user `UsdTransfer`; ledger credit |
+| `PLACE_ORDER` | `placeOrder(bytes)` | `{"market": "spot"\|"perp", "coin": "ETH", "isBuy": true, "orderType": "market"\|"limit", "size": N, "limitPx": N, "reduceOnly": false, "leverage": N, "isCross": true}` — `limitPx`, `reduceOnly`, `leverage`, `isCross` are optional | Set leverage if perp; class-transfer USDC spot↔perp as needed; `MarketOpen` / `Order` |
+| `CANCEL` | `cancel(bytes)` | `{"coin": "ETH", "orderId": N}` | `BulkCancel` on HL |
+| `WITHDRAW` | `withdraw(uint256 usdAmount)` | `{"usdAmount": N}` | User → treasury `UsdTransfer`; ledger debit (**stub in v1 — no FXRP back to Flare yet**) |
+
+#### PLACE_ORDER payload fields
+
+| Field | Required | Values |
+|---|---|---|
+| `market` | yes | `"spot"` or `"perp"` |
+| `coin` | yes | e.g. `"ETH"`, `"BTC"` |
+| `isBuy` | yes | `true` / `false` |
+| `orderType` | yes | `"market"` or `"limit"` |
+| `size` | yes | quantity (float) |
+| `limitPx` | no | limit price; required when `orderType = "limit"` |
+| `reduceOnly` | no | `true` to reduce position only (default `false`) |
+| `leverage` | no | integer leverage; only applied for perp orders |
+| `isCross` | no | `true` = cross margin, `false` = isolated (default `true`) |
+
+### Read path
+
+The extension exposes two complementary ways to read account state:
+
+- **Authoritative (TEE `/state`):** the TEE publishes per-user state including the derived `hlAddress`, the internal `ledgerBalance`, and cached positions. Clients poll this via the proxy state endpoint.
+- **Live (frontend direct):** once a client has the user's `hlAddress` (from `/state`), it can read positions, fills, and order book data straight from Hyperliquid's public info API (`https://api.hyperliquid-testnet.xyz/info`) for real-time UX without routing through the TEE.
+
+### v1 deferrals
+
+The following items are **out of scope for v1** and deferred to later milestones:
+
+- **Flare Smart Accounts (FSA):** v1 identifies users by the EOA that calls the on-chain contract. FSA support is a future milestone.
+- **Real FXRP escrow / withdrawal:** `DEPOSIT` is a mock funded by the testnet treasury; `WITHDRAW` debits the ledger but does not yet move real FXRP back to Flare. Full escrow + FXRP→FUSD conversion is deferred.
+- **Multi-machine key consistency:** each TEE machine derives a different HL account for the same user. v1 runs a single TEE machine. Multi-machine needs either sticky per-user routing or shared key custody via PMW — deferred and flagged in the design spec.
+
+For full design rationale, risks, and open questions see the design spec: [`docs/superpowers/specs/2026-06-30-hyperliquid-controlled-accounts-design.md`](docs/superpowers/specs/2026-06-30-hyperliquid-controlled-accounts-design.md).
+
 ## Further Reading
 
 - [Extension Development Guide](docs/extension-guide.md) — how the code works and how to add your own logic
