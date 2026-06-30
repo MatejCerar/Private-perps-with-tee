@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"flag"
 	"strings"
-	"time"
 
 	"extension-scaffold/tools/pkg/configs"
 	"extension-scaffold/tools/pkg/fccutils"
@@ -15,16 +14,6 @@ import (
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
 	"github.com/pkg/errors"
 )
-
-type SayHelloResponse struct {
-	Greeting       string `json:"greeting"`
-	GreetingNumber int    `json:"greetingNumber"`
-}
-
-type SayGoodbyeResponse struct {
-	Farewell       string `json:"farewell"`
-	FarewellNumber int    `json:"farewellNumber"`
-}
 
 func main() {
 	af := flag.String("a", configs.AddressesFile, "file with deployed addresses")
@@ -53,119 +42,87 @@ func main() {
 		}
 	}
 
-	// --- Test case 1: Send a SAY_HELLO instruction ---
-	logger.Infof("Sending SAY_HELLO instruction...")
+	// --- Step 1: DEPOSIT -----------------------------------------------------
+	logger.Infof("Sending DEPOSIT instruction...")
+	depPayload, _ := json.Marshal(map[string]any{"usdAmount": 100})
+	depID, _, err := instrutils.SendDeposit(testSupport, instructionSenderAddress, depPayload)
+	if err != nil {
+		fccutils.FatalWithCause(err)
+	}
+	logger.Infof("DEPOSIT sent. ID: %s", depID.Hex())
+	depResp, err := fccutils.ActionResult(*pf, depID)
+	if err != nil {
+		fccutils.FatalWithCause(err)
+	}
+	if depResp.Result.Status != 1 {
+		fccutils.FatalWithCause(errors.Errorf("deposit failed (status=%d): %s", depResp.Result.Status, depResp.Result.Log))
+	}
+	logger.Infof("deposit ok: %s", string(depResp.Result.Data))
 
-	payload, err := json.Marshal(map[string]interface{}{
-		"name": "World",
+	// --- Step 2: PERP market order -------------------------------------------
+	logger.Infof("Sending PERP market order...")
+	perpPayload, _ := json.Marshal(map[string]any{
+		"market":    "perp",
+		"coin":      "ETH",
+		"isBuy":     true,
+		"orderType": "market",
+		"size":      0.01,
+		"leverage":  3,
 	})
+	perpID, _, err := instrutils.SendPlaceOrder(testSupport, instructionSenderAddress, perpPayload)
 	if err != nil {
 		fccutils.FatalWithCause(err)
 	}
-
-	instructionId, _, err := instrutils.SendSayHello(testSupport, instructionSenderAddress, payload)
+	logger.Infof("PERP order sent. ID: %s", perpID.Hex())
+	perpResp, err := fccutils.ActionResult(*pf, perpID)
 	if err != nil {
 		fccutils.FatalWithCause(err)
 	}
-	logger.Infof("Instruction sent. ID: %s", instructionId.Hex())
+	if perpResp.Result.Status != 1 {
+		fccutils.FatalWithCause(errors.Errorf("perp order failed (status=%d): %s", perpResp.Result.Status, perpResp.Result.Log))
+	}
+	logger.Infof("perp order accepted: %s", string(perpResp.Result.Data))
 
-	time.Sleep(5 * time.Second)
-
-	err = verifyHelloResult(*pf, instructionId)
+	// --- Step 3: SPOT limit order --------------------------------------------
+	logger.Infof("Sending SPOT limit order...")
+	spotPayload, _ := json.Marshal(map[string]any{
+		"market":    "spot",
+		"coin":      "PURR/USDC",
+		"isBuy":     true,
+		"orderType": "limit",
+		"size":      20,
+		"limitPx":   0.5,
+	})
+	spotID, _, err := instrutils.SendPlaceOrder(testSupport, instructionSenderAddress, spotPayload)
 	if err != nil {
 		fccutils.FatalWithCause(err)
 	}
-	logger.Infof("Test passed: SAY_HELLO instruction processed successfully")
-
-	// --- Test case 2: Send a SAY_GOODBYE instruction ---
-	logger.Infof("Sending SAY_GOODBYE instruction...")
-
-	goodbyeInstructionId, _, err := instrutils.SendSayGoodbye(testSupport, instructionSenderAddress, "World", "heading out")
+	logger.Infof("SPOT order sent. ID: %s", spotID.Hex())
+	spotResp, err := fccutils.ActionResult(*pf, spotID)
 	if err != nil {
 		fccutils.FatalWithCause(err)
 	}
-	logger.Infof("Instruction sent. ID: %s", goodbyeInstructionId.Hex())
+	if spotResp.Result.Status != 1 {
+		fccutils.FatalWithCause(errors.Errorf("spot order failed (status=%d): %s", spotResp.Result.Status, spotResp.Result.Log))
+	}
+	logger.Infof("spot order accepted: %s", string(spotResp.Result.Data))
 
-	time.Sleep(5 * time.Second)
-
-	err = verifyGoodbyeResult(*pf, goodbyeInstructionId)
+	// --- Step 4: WITHDRAW ----------------------------------------------------
+	logger.Infof("Sending WITHDRAW instruction...")
+	wdPayload, _ := json.Marshal(map[string]any{"usdAmount": 20})
+	wdID, _, err := instrutils.SendWithdraw(testSupport, instructionSenderAddress, wdPayload)
 	if err != nil {
 		fccutils.FatalWithCause(err)
 	}
-	logger.Infof("Test passed: SAY_GOODBYE instruction processed successfully")
+	logger.Infof("WITHDRAW sent. ID: %s", wdID.Hex())
+	wdResp, err := fccutils.ActionResult(*pf, wdID)
+	if err != nil {
+		fccutils.FatalWithCause(err)
+	}
+	if wdResp.Result.Status != 1 {
+		fccutils.FatalWithCause(errors.Errorf("withdraw failed (status=%d): %s", wdResp.Result.Status, wdResp.Result.Log))
+	}
+	logger.Infof("withdraw ok: %s", string(wdResp.Result.Data))
 
 	logger.Infof("All tests passed.")
-}
-
-func verifyHelloResult(proxyURL string, instructionId common.Hash) error {
-	// --- Generic: poll proxy for result (do not modify) ---
-	actionResponse, err := fccutils.ActionResult(proxyURL, instructionId)
-	if err != nil {
-		return err
-	}
-	actionResult := actionResponse.Result
-
-	if actionResult.Status == 0 {
-		return errors.Errorf("instruction processing failed: %s", actionResult.Log)
-	}
-	if actionResult.Status == 2 {
-		return errors.New("instruction still pending after polling, expected completed")
-	}
-
-	if len(actionResult.Data) == 0 {
-		return errors.New("expected response data but got none")
-	}
-
-	var resp SayHelloResponse
-	err = json.Unmarshal(actionResult.Data, &resp)
-	if err != nil {
-		return errors.Errorf("failed to unmarshal response: %s", err)
-	}
-
-	if resp.Greeting == "" {
-		return errors.New("expected non-empty Greeting")
-	}
-	if resp.GreetingNumber < 1 {
-		return errors.Errorf("expected GreetingNumber >= 1, got %d", resp.GreetingNumber)
-	}
-
-	logger.Infof("Response data: %+v", resp)
-
-	return nil
-}
-
-func verifyGoodbyeResult(proxyURL string, instructionId common.Hash) error {
-	actionResponse, err := fccutils.ActionResult(proxyURL, instructionId)
-	if err != nil {
-		return err
-	}
-	actionResult := actionResponse.Result
-
-	if actionResult.Status == 0 {
-		return errors.Errorf("instruction processing failed: %s", actionResult.Log)
-	}
-	if actionResult.Status == 2 {
-		return errors.New("instruction still pending after polling, expected completed")
-	}
-
-	if len(actionResult.Data) == 0 {
-		return errors.New("expected response data but got none")
-	}
-
-	var resp SayGoodbyeResponse
-	err = json.Unmarshal(actionResult.Data, &resp)
-	if err != nil {
-		return errors.Errorf("failed to unmarshal response: %s", err)
-	}
-
-	if resp.Farewell == "" {
-		return errors.New("expected non-empty Farewell")
-	}
-	if resp.FarewellNumber < 1 {
-		return errors.Errorf("expected FarewellNumber >= 1, got %d", resp.FarewellNumber)
-	}
-
-	logger.Infof("Response data: %+v", resp)
-
-	return nil
 }
