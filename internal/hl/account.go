@@ -71,6 +71,9 @@ type realAccount struct {
 	addr string
 }
 
+var _ Account = (*realAccount)(nil)
+var _ Factory = (*realFactory)(nil)
+
 func (a *realAccount) Address() string { return a.addr }
 
 func (a *realAccount) PlaceOrder(ctx context.Context, req OrderReq) (OrderResult, error) {
