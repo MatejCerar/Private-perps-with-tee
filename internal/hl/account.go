@@ -81,9 +81,13 @@ func (a *realAccount) PlaceOrder(ctx context.Context, req OrderReq) (OrderResult
 		status gohl.OrderStatus
 		err    error
 	)
-	if req.OrderType == "market" {
+	switch {
+	case req.OrderType == "market" && req.ReduceOnly:
+		sz := req.Size
+		status, err = a.ex.MarketClose(ctx, req.Coin, &sz, nil, 0.05, nil, nil)
+	case req.OrderType == "market":
 		status, err = a.ex.MarketOpen(ctx, req.Coin, req.IsBuy, req.Size, nil, 0.05, nil, nil)
-	} else {
+	default:
 		status, err = a.ex.Order(ctx, gohl.CreateOrderRequest{
 			Coin:       req.Coin,
 			IsBuy:      req.IsBuy,

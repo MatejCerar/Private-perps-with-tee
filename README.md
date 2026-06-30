@@ -474,7 +474,7 @@ Copy `.env.example` and fill in the Hyperliquid-specific values:
 | `HL_MASTER_SEED` | (required, no default) | 32+ byte hex seed used to derive per-user HL keys — **KEEP SECRET** |
 | `HL_TREASURY_KEY` | (required, no default) | Private key (hex) of the faucet-funded treasury HL account — **KEEP SECRET** |
 | `HL_MAX_DEPOSIT_USD` | `1000` | Maximum USD amount for a single `DEPOSIT` instruction (guardrail) |
-| `HL_MAX_TOTAL_DEPOSIT_USD` | `5000` | Maximum total USD ever credited from the treasury (global cap) |
+| `HL_MAX_TOTAL_DEPOSIT_USD` | `5000` | Enforced against the current net ledger total; ultimately bounded by the treasury balance (global cap) |
 
 > Both `HL_MASTER_SEED` and `HL_TREASURY_KEY` are secrets. Never commit real values. Leave them empty in `.env.example`.
 
@@ -507,7 +507,7 @@ The extension uses OPType `HL`, sub-routed by OPCommand. Send instructions via `
 
 The extension exposes two complementary ways to read account state:
 
-- **Authoritative (TEE `/state`):** the TEE publishes per-user state including the derived `hlAddress`, the internal `ledgerBalance`, and cached positions. Clients poll this via the proxy state endpoint.
+- **Authoritative (TEE `/state`):** the TEE publishes per-user state including the derived `hlAddress`, the internal balance (`balanceUsd`), and cached positions. Clients poll this via the proxy state endpoint.
 - **Live (frontend direct):** once a client has the user's `hlAddress` (from `/state`), it can read positions, fills, and order book data straight from Hyperliquid's public info API (`https://api.hyperliquid-testnet.xyz/info`) for real-time UX without routing through the TEE.
 
 ### v1 deferrals

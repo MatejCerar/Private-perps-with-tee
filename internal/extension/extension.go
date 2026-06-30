@@ -97,8 +97,11 @@ func (e *Extension) accountFor(user common.Address) (hl.Account, error) {
 	acct := e.factory.Account(priv, addr)
 
 	e.mu.Lock()
+	defer e.mu.Unlock()
+	if existing, ok := e.accounts[user]; ok {
+		return existing, nil // another goroutine derived it first; converge on one instance
+	}
 	e.accounts[user] = acct
-	e.mu.Unlock()
 	return acct, nil
 }
 
