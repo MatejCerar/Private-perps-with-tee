@@ -39,12 +39,19 @@ func TestHLTestnetRoundTrip(t *testing.T) {
 	uAddr := crypto.PubkeyToAddress(uk.PublicKey).Hex()
 	uAcct := factory.Account(uk, uAddr)
 
-	if err := treasury.SendUSD(ctx, uAddr, 15); err != nil {
+	if err := treasury.SendUSD(ctx, uAddr, 30); err != nil {
 		t.Fatalf("fund user from treasury: %v", err)
 	}
-	// Perp market buy, min ~$10 notional.
+	t.Logf("funded user %s with 30 USDC (spot)", uAddr)
+	// Standard/default-mode account: spotSend lands in spot, but a perp order
+	// draws from perp margin, so move collateral spot->perp first.
+	if err := uAcct.ClassTransfer(ctx, 25, true); err != nil {
+		t.Fatalf("class transfer spot->perp: %v", err)
+	}
+	t.Logf("moved 25 USDC spot->perp for %s", uAddr)
+	// Perp market buy, ~$32 notional (above HL's $10 minimum).
 	if _, err := uAcct.PlaceOrder(ctx, hl.OrderReq{
-		Coin: "ETH", Market: "perp", IsBuy: true, OrderType: "market", Size: 0.005, Leverage: 2,
+		Coin: "ETH", Market: "perp", IsBuy: true, OrderType: "market", Size: 0.02, Leverage: 2,
 	}); err != nil {
 		t.Fatalf("place order: %v", err)
 	}

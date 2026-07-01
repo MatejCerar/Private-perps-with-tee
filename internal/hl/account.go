@@ -3,11 +3,15 @@
 package hl
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strconv"
+	"time"
 
 	gohl "github.com/sonirico/go-hyperliquid"
 )
@@ -62,13 +66,63 @@ type realFactory struct{ baseURL string }
 func NewRealFactory(baseURL string) Factory { return &realFactory{baseURL: baseURL} }
 
 func (f *realFactory) Account(privKey *ecdsa.PrivateKey, accountAddr string) Account {
-	ex := gohl.NewExchange(context.Background(), privKey, f.baseURL, nil, "", accountAddr, nil, nil)
-	return &realAccount{ex: ex, addr: accountAddr}
+	// Pass a sanitized spotMeta so go-hyperliquid does not fetch it itself and
+	// panic on testnet. In SpotAssetInfo, Tokens[0] is a token *index*, but the
+	// library uses it as a positional index into SpotMeta.Tokens; on testnet,
+	// frozen/removed tokens leave gaps so some pairs reference an index past the
+	// end of the Tokens slice (info.go:111). We drop those malformed pairs.
+	spotMeta := sanitizedSpotMeta(f.baseURL)
+	ex := gohl.NewExchange(context.Background(), privKey, f.baseURL, nil, "", accountAddr, spotMeta, nil)
+	return &realAccount{ex: ex, addr: accountAddr, usdcToken: usdcTokenID(spotMeta)}
+}
+
+// usdcTokenID returns the spotSend token identifier for USDC ("USDC:<tokenId>"),
+// the format Hyperliquid's spotSend action expects. Falls back to the bare name
+// if USDC is not found in the fetched spot metadata.
+func usdcTokenID(sm *gohl.SpotMeta) string {
+	if sm != nil {
+		for _, t := range sm.Tokens {
+			if t.Name == "USDC" {
+				return "USDC:" + t.TokenID
+			}
+		}
+	}
+	return "USDC"
+}
+
+// sanitizedSpotMeta fetches /info spotMeta and removes universe entries whose
+// first token index is out of range for the tokens slice. It always returns a
+// non-nil value so NewExchange never falls back to its own crashing fetch.
+func sanitizedSpotMeta(baseURL string) *gohl.SpotMeta {
+	sm := &gohl.SpotMeta{}
+	body, _ := json.Marshal(map[string]string{"type": "spotMeta"})
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Post(baseURL+"/info", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return sm
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return sm
+	}
+	if err := json.Unmarshal(raw, sm); err != nil {
+		return &gohl.SpotMeta{}
+	}
+	kept := sm.Universe[:0]
+	for _, u := range sm.Universe {
+		if len(u.Tokens) > 0 && u.Tokens[0] >= 0 && u.Tokens[0] < len(sm.Tokens) {
+			kept = append(kept, u)
+		}
+	}
+	sm.Universe = kept
+	return sm
 }
 
 type realAccount struct {
-	ex   *gohl.Exchange
-	addr string
+	ex        *gohl.Exchange
+	addr      string
+	usdcToken string
 }
 
 var _ Account = (*realAccount)(nil)
@@ -119,13 +173,29 @@ func (a *realAccount) Cancel(ctx context.Context, coin string, oid int64) error 
 }
 
 func (a *realAccount) SendUSD(ctx context.Context, dest string, amount float64) error {
-	_, err := a.ex.UsdTransfer(ctx, amount, dest)
-	return err
+	// Unified accounts hold a single USDC balance (spot == trading collateral),
+	// so fund/withdraw via spotSend of the USDC token rather than usdSend, which
+	// targets the legacy perp sub-balance and is rejected on unified accounts.
+	// go-hyperliquid does not inspect the response status, so surface it here.
+	resp, err := a.ex.SpotTransfer(ctx, amount, dest, a.usdcToken)
+	if err != nil {
+		return err
+	}
+	if resp != nil && resp.Status != "ok" {
+		return fmt.Errorf("spotSend rejected: status=%q error=%q", resp.Status, resp.Error)
+	}
+	return nil
 }
 
 func (a *realAccount) ClassTransfer(ctx context.Context, amount float64, toPerp bool) error {
-	_, err := a.ex.UsdClassTransfer(ctx, amount, toPerp)
-	return err
+	resp, err := a.ex.UsdClassTransfer(ctx, amount, toPerp)
+	if err != nil {
+		return err
+	}
+	if resp != nil && resp.Status != "ok" {
+		return fmt.Errorf("usdClassTransfer rejected: status=%q error=%q", resp.Status, resp.Error)
+	}
+	return nil
 }
 
 func (a *realAccount) SetLeverage(ctx context.Context, coin string, leverage int, isCross bool) error {
