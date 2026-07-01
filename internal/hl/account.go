@@ -9,10 +9,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"strconv"
 	"time"
 
+	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 	gohl "github.com/sonirico/go-hyperliquid"
 )
 
@@ -53,9 +55,19 @@ type Account interface {
 	SendUSD(ctx context.Context, dest string, amount float64) error
 	ClassTransfer(ctx context.Context, amount float64, toPerp bool) error
 	SpotUSDC(ctx context.Context) (float64, error)
+	PerpWithdrawable(ctx context.Context) (float64, error)
 	SetLeverage(ctx context.Context, coin string, leverage int, isCross bool) error
+	SetAbstraction(ctx context.Context, mode string) error
 	Positions(ctx context.Context) (PositionsSnapshot, error)
 }
+
+// Abstraction modes for SetAbstraction. "disabled" = standard mode, which keeps
+// separate spot/perp balances and (unlike unifiedAccount) permits usdSend,
+// spotSend, and spot<->perp class transfers.
+const (
+	AbstractionStandard = "disabled"
+	AbstractionUnified  = "unifiedAccount"
+)
 
 type Factory interface {
 	Account(privKey *ecdsa.PrivateKey, accountAddr string) Account
@@ -73,7 +85,7 @@ func (f *realFactory) Account(privKey *ecdsa.PrivateKey, accountAddr string) Acc
 	// end of the Tokens slice (info.go:111). We drop those malformed pairs.
 	spotMeta := sanitizedSpotMeta(f.baseURL)
 	ex := gohl.NewExchange(context.Background(), privKey, f.baseURL, nil, "", accountAddr, spotMeta, nil)
-	return &realAccount{ex: ex, addr: accountAddr, usdcToken: usdcTokenID(spotMeta)}
+	return &realAccount{ex: ex, addr: accountAddr, usdcToken: usdcTokenID(spotMeta), privKey: privKey, baseURL: f.baseURL}
 }
 
 // usdcTokenID returns the spotSend token identifier for USDC ("USDC:<tokenId>"),
@@ -123,6 +135,8 @@ type realAccount struct {
 	ex        *gohl.Exchange
 	addr      string
 	usdcToken string
+	privKey   *ecdsa.PrivateKey
+	baseURL   string
 }
 
 var _ Account = (*realAccount)(nil)
@@ -196,6 +210,60 @@ func (a *realAccount) ClassTransfer(ctx context.Context, amount float64, toPerp 
 		return fmt.Errorf("usdClassTransfer rejected: status=%q error=%q", resp.Status, resp.Error)
 	}
 	return nil
+}
+
+// SetAbstraction sets the account's abstraction mode via the userSetAbstraction
+// action (not in go-hyperliquid, so sent raw). Use AbstractionStandard so the
+// account permits transfers and class transfers. Rejected by HL if the account
+// has open positions/orders.
+func (a *realAccount) SetAbstraction(ctx context.Context, mode string) error {
+	nonce := time.Now().UnixMilli()
+	action := map[string]any{
+		"type":        "userSetAbstraction",
+		"user":        a.addr,
+		"abstraction": mode,
+		"nonce":       big.NewInt(nonce),
+	}
+	payloadTypes := []apitypes.Type{
+		{Name: "hyperliquidChain", Type: "string"},
+		{Name: "user", Type: "address"},
+		{Name: "abstraction", Type: "string"},
+		{Name: "nonce", Type: "uint64"},
+	}
+	sig, err := gohl.SignUserSignedAction(a.privKey, action, payloadTypes,
+		"HyperliquidTransaction:UserSetAbstraction", a.baseURL == gohl.MainnetAPIURL)
+	if err != nil {
+		return err
+	}
+	payload := map[string]any{"action": action, "nonce": nonce, "signature": sig}
+	b, _ := json.Marshal(payload)
+	resp, err := http.Post(a.baseURL+"/exchange", "application/json", bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	var r struct {
+		Status   string          `json:"status"`
+		Response json.RawMessage `json:"response"`
+	}
+	if err := json.Unmarshal(body, &r); err != nil {
+		return fmt.Errorf("setAbstraction: unparseable response: %s", string(body))
+	}
+	if r.Status != "ok" {
+		return fmt.Errorf("setAbstraction rejected: %s", string(r.Response))
+	}
+	return nil
+}
+
+// PerpWithdrawable returns the account's free (withdrawable) perp USDC — funds
+// not tied up as position margin. Used to sweep perp->spot before a spot order.
+func (a *realAccount) PerpWithdrawable(ctx context.Context) (float64, error) {
+	us, err := a.ex.Info().UserState(ctx, a.addr)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.ParseFloat(us.Withdrawable, 64)
 }
 
 func (a *realAccount) SetLeverage(ctx context.Context, coin string, leverage int, isCross bool) error {

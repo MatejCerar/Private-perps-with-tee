@@ -464,6 +464,21 @@ To seed the treasury:
 3. Note: faucet use requires a **$5 mainnet activation** of the address on Hyperliquid mainnet. This is a one-time Hyperliquid requirement, not a Flare requirement.
 4. Set `HL_TREASURY_KEY` in your `.env` to the private key (hex) of that funded address.
 
+### Account modes: unified vs. standard (important)
+
+Hyperliquid accounts have an **abstraction mode** (`unifiedAccount`, `portfolioMargin`, or `disabled`/standard). **Unified accounts disable inter-account transfers** (`usdSend`/`spotSend`) — HL rejects them with `"Action disabled when unified account is active"`. Because the funding model moves USDC between the treasury and per-user accounts, those accounts must be in **standard mode**.
+
+The extension handles this automatically:
+
+- On startup it best-effort sets the **treasury** to standard mode via the `userSetAbstraction` action (`abstraction: "disabled"`). This is rejected if the treasury has **open positions/orders**, so keep the treasury flat — it is a funding account, not a trading account.
+- Fresh derived user accounts come up in `default` mode, which already permits transfers and spot↔perp class transfers, so they need no change.
+
+Mechanics, for reference:
+
+- **Funding** uses `spotSend` (the USDC token transfer), which credits the recipient's **spot** balance.
+- Since spot and perp balances are separate in standard mode, the order handler **sweeps collateral to the side each order needs**: `spot→perp` before a perp order, `perp→spot` before a spot buy (via `usdClassTransfer`).
+- You can inspect an account's mode with the info query `{"type":"userAbstraction","user":"0x..."}`.
+
 ### Environment variables
 
 Copy `.env.example` and fill in the Hyperliquid-specific values:

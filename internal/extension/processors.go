@@ -78,23 +78,33 @@ func (e *Extension) processPlaceOrder(a teetypes.Action, df *instruction.DataFix
 	}
 	ctx := context.Background()
 
-	if req.Market == "perp" && req.Leverage > 0 {
-		if err := acct.SetLeverage(ctx, req.Coin, req.Leverage, req.IsCross); err != nil {
-			return buildResult(a, df, nil, 0, fmt.Errorf("set leverage: %w", err))
-		}
-	}
-
-	if req.Market == "spot" && req.IsBuy {
-		notional := req.Size * req.LimitPx
-		if req.OrderType == "market" {
-			notional = req.Size // px unknown; move size as a rough floor (see note)
+	// Per-user accounts run in standard mode with separate spot/perp balances,
+	// and deposits land in spot (via spotSend). Sweep collateral to whichever
+	// side this order needs before placing it. Only transfer above a small dust
+	// threshold to avoid needless actions.
+	const dustUSD = 1.0
+	if req.Market == "perp" {
+		if req.Leverage > 0 {
+			if err := acct.SetLeverage(ctx, req.Coin, req.Leverage, req.IsCross); err != nil {
+				return buildResult(a, df, nil, 0, fmt.Errorf("set leverage: %w", err))
+			}
 		}
 		spot, err := acct.SpotUSDC(ctx)
 		if err != nil {
 			return buildResult(a, df, nil, 0, fmt.Errorf("read spot balance: %w", err))
 		}
-		if spot < notional {
-			if err := acct.ClassTransfer(ctx, notional-spot, false); err != nil {
+		if spot > dustUSD {
+			if err := acct.ClassTransfer(ctx, spot, true); err != nil {
+				return buildResult(a, df, nil, 0, fmt.Errorf("spot->perp transfer: %w", err))
+			}
+		}
+	} else if req.IsBuy { // spot buy needs USDC in the spot wallet
+		perp, err := acct.PerpWithdrawable(ctx)
+		if err != nil {
+			return buildResult(a, df, nil, 0, fmt.Errorf("read perp balance: %w", err))
+		}
+		if perp > dustUSD {
+			if err := acct.ClassTransfer(ctx, perp, false); err != nil {
 				return buildResult(a, df, nil, 0, fmt.Errorf("perp->spot transfer: %w", err))
 			}
 		}

@@ -140,3 +140,26 @@ pattern).
   the funding primitive for the treasury model.
 - Testnet faucet: 1,000 mock USDC, one-time per address, requires a $5 mainnet activation.
 - Minimum order ≈ $10 notional; perps USDC-margined; spot trades against USDC.
+
+## 12. Testnet integration findings (addendum, 2026-07-01)
+
+Live testnet integration surfaced platform behavior that revised the funding model
+(the per-user isolation model in §4 is unchanged and validated end-to-end):
+
+- **Unified accounts disable inter-account transfers.** HL now defaults many accounts to a
+  `unifiedAccount` abstraction mode where `usdSend`/`spotSend` are rejected
+  (`"Action disabled when unified account is active"`). The treasury must be in **standard mode**
+  (`abstraction: "disabled"`) to fund users. The TEE sets this via the `userSetAbstraction`
+  action (not in go-hyperliquid; sent as a raw signed action), which is rejected while the
+  account has open positions/orders.
+- **Funding uses `spotSend`, not `usdSend`.** USDC lands in the recipient's spot balance;
+  in standard mode spot/perp are separate, so the order handler sweeps collateral to the
+  order's side (`spot→perp` for perp orders, `perp→spot` for spot buys) via `usdClassTransfer`.
+- **go-hyperliquid v0.33.1 fragilities fixed in the adapter:** it panics building the spot-asset
+  map on current testnet metadata (out-of-range token index) — the adapter pre-fetches and
+  sanitizes `spotMeta`; and `UsdTransfer`/`SpotTransfer`/`UsdClassTransfer` do not inspect the
+  response status, so a rejected transfer looked like success — the adapter surfaces the error.
+- **Proven live:** treasury (standard) `spotSend` → fresh derived user account →
+  `spot→perp` class transfer → perp order fills; position verified via HL's public info API.
+- **Still deferred:** multi-user handler flow under real proxy/instruction load (on-chain e2e),
+  the `$10` minimum-order handling in the UX, and everything in §9.

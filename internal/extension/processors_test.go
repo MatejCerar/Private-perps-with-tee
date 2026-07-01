@@ -72,7 +72,7 @@ func TestProcessDepositRejectsOverCap(t *testing.T) {
 	}
 }
 
-func TestProcessPerpMarketOrderSetsLeverageAndPlaces(t *testing.T) {
+func TestProcessPerpOrderSetsLeverageSweepsSpotToPerpAndPlaces(t *testing.T) {
 	seed := bytes.Repeat([]byte{0x01}, 32)
 	user := common.HexToAddress("0x3333333333333333333333333333333333333333")
 
@@ -80,6 +80,7 @@ func TestProcessPerpMarketOrderSetsLeverageAndPlaces(t *testing.T) {
 	e := NewWith(0, 0, &hl.FakeFactory{}, &hl.FakeAccount{Addr: "0xT"}, "0xT", seed)
 	acct, _ := e.accountFor(user)
 	fa := acct.(*hl.FakeAccount)
+	fa.SpotBal = 30 // deposited USDC lands in spot; a perp order sweeps it to perp
 
 	msg := envelope(t, user, types.PlaceOrderRequest{
 		Market: "perp", Coin: "BTC", IsBuy: true, OrderType: "market", Size: 0.01, Leverage: 5,
@@ -92,18 +93,42 @@ func TestProcessPerpMarketOrderSetsLeverageAndPlaces(t *testing.T) {
 	if len(fa.Leverages) != 1 || fa.Leverages[0] != 5 {
 		t.Fatalf("leverage not set: %+v", fa.Leverages)
 	}
+	if len(fa.Transfers) != 1 || fa.Transfers[0] != 30 || !fa.TransfersToPerp[0] {
+		t.Fatalf("expected spot->perp sweep of 30, got amounts=%v toPerp=%v", fa.Transfers, fa.TransfersToPerp)
+	}
 	if len(fa.Orders) != 1 || fa.Orders[0].Coin != "BTC" {
 		t.Fatalf("order not placed: %+v", fa.Orders)
 	}
 }
 
-func TestProcessSpotOrderClassTransfersWhenSpotLow(t *testing.T) {
+func TestProcessPerpOrderNoSweepWhenSpotEmpty(t *testing.T) {
+	seed := bytes.Repeat([]byte{0x01}, 32)
+	user := common.HexToAddress("0x3a33333333333333333333333333333333333333")
+	e := NewWith(0, 0, &hl.FakeFactory{}, &hl.FakeAccount{Addr: "0xT"}, "0xT", seed)
+	acct, _ := e.accountFor(user)
+	fa := acct.(*hl.FakeAccount)
+	fa.SpotBal = 0 // nothing in spot to sweep (funds already in perp)
+
+	msg := envelope(t, user, types.PlaceOrderRequest{
+		Market: "perp", Coin: "ETH", IsBuy: true, OrderType: "market", Size: 0.01,
+	})
+	a, df := actionFor(msg)
+	res := e.processPlaceOrder(a, df)
+	if res.Status != 1 {
+		t.Fatalf("status = %d log = %s", res.Status, res.Log)
+	}
+	if len(fa.Transfers) != 0 {
+		t.Fatalf("expected no transfer when spot empty, got %+v", fa.Transfers)
+	}
+}
+
+func TestProcessSpotBuySweepsPerpToSpot(t *testing.T) {
 	seed := bytes.Repeat([]byte{0x01}, 32)
 	user := common.HexToAddress("0x4444444444444444444444444444444444444444")
 	e := NewWith(0, 0, &hl.FakeFactory{}, &hl.FakeAccount{Addr: "0xT"}, "0xT", seed)
 	acct, _ := e.accountFor(user)
 	fa := acct.(*hl.FakeAccount)
-	fa.SpotBal = 0 // forces a class transfer
+	fa.PerpBal = 20 // free perp margin is swept back to spot for a spot buy
 
 	msg := envelope(t, user, types.PlaceOrderRequest{
 		Market: "spot", Coin: "PURR/USDC", IsBuy: true, OrderType: "limit", Size: 10, LimitPx: 2,
@@ -113,8 +138,8 @@ func TestProcessSpotOrderClassTransfersWhenSpotLow(t *testing.T) {
 	if res.Status != 1 {
 		t.Fatalf("status = %d log = %s", res.Status, res.Log)
 	}
-	if len(fa.Transfers) != 1 {
-		t.Fatalf("expected one class transfer, got %+v", fa.Transfers)
+	if len(fa.Transfers) != 1 || fa.Transfers[0] != 20 || fa.TransfersToPerp[0] {
+		t.Fatalf("expected perp->spot sweep of 20, got amounts=%v toPerp=%v", fa.Transfers, fa.TransfersToPerp)
 	}
 }
 

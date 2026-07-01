@@ -1,6 +1,7 @@
 package extension
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"encoding/json"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 
+	"github.com/flare-foundation/go-flare-common/pkg/logger"
 	"github.com/flare-foundation/go-flare-common/pkg/tee/instruction"
 	teetypes "github.com/flare-foundation/tee-node/pkg/types"
 	teeutils "github.com/flare-foundation/tee-node/pkg/utils"
@@ -54,6 +56,14 @@ func New(extensionPort, signPort int) *Extension {
 	treasuryAddr := crypto.PubkeyToAddress(treasuryKey.PublicKey).Hex()
 	factory := hl.NewRealFactory(config.HyperliquidURL)
 	treasury := factory.Account(treasuryKey, treasuryAddr)
+
+	// Best-effort: put the treasury in standard mode so it can spotSend to
+	// per-user accounts (unified accounts disable inter-account transfers).
+	// Idempotent once set; fails only if the treasury has open positions/orders,
+	// which the operator resolves during setup.
+	if err := treasury.SetAbstraction(context.Background(), hl.AbstractionStandard); err != nil {
+		logger.Warnf("treasury SetAbstraction(standard): %v (ensure treasury is flat and in standard mode)", err)
+	}
 
 	return buildExtension(extensionPort, signPort, factory, treasury, treasuryAddr, seed)
 }
