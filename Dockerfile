@@ -30,12 +30,12 @@ RUN \
   : "Clean up for improving reproducibility (optional)" && \
   rm -rf /var/log/* /var/cache/ldconfig/aux-cache
 
-# bring in both modules; tee-node sits next to extension-scaffold so the replace directive resolves
+# bring in both modules; tee-node sits next to hype-accounts so the replace directive resolves
 # explicit chmod/chown on COPY so file metadata does not depend on host umask or ownership
 COPY --chmod=644 --chown=0:0 tee-node/ ./tee-node/
-COPY --chmod=644 --chown=0:0 extension-examples/extension-scaffold/ ./extension-examples/extension-scaffold/
+COPY --chmod=644 --chown=0:0 extension-examples/hype-accounts/ ./extension-examples/hype-accounts/
 
-WORKDIR /build/extension-examples/extension-scaffold
+WORKDIR /build/extension-examples/hype-accounts
 
 RUN go mod download
 RUN go mod verify
@@ -71,7 +71,7 @@ USER 0:0
 
 # confidential space launch policy label: allow the operator to override these env vars at workload launch
 # without this, the confidential space VM rejects overrides at attestation time and the values baked here are final
-LABEL "tee.launch_policy.allow_env_override"="LOG_LEVEL,PROXY_URL,INITIAL_OWNER,EXTENSION_ID,CHAIN_URL,MODE,CONFIG_PORT,SIGN_PORT,EXTENSION_PORT"
+LABEL "tee.launch_policy.allow_env_override"="LOG_LEVEL,PROXY_URL,INITIAL_OWNER,EXTENSION_ID,CHAIN_URL,MODE,CONFIG_PORT,SIGN_PORT,EXTENSION_PORT,HYPERLIQUID_URL,HL_MASTER_SEED,HL_TREASURY_KEY,HL_MAX_DEPOSIT_USD,HL_MAX_TOTAL_DEPOSIT_USD"
 
 EXPOSE 5501 7701 7702
 

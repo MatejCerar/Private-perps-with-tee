@@ -24,7 +24,7 @@ services:
   extension-tee:
     build:
       context: ../..
-      dockerfile: extension-examples/extension-scaffold/Dockerfile
+      dockerfile: extension-examples/hype-accounts/Dockerfile
       args:
         SOURCE_DATE_EPOCH: ${SOURCE_DATE_EPOCH}
     env_file:
