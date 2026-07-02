@@ -12,6 +12,7 @@
 #   LOCAL_MODE          — skip attestation (default: true)
 #   WAIT_TIMEOUT        — service wait timeout in seconds (default: 120)
 #   EXTENSION_OWNER_KEY — private key override for AddTeeVersion (optional)
+#   REGISTER_TEE_COMMAND  — register-tee command (default: rRap, re-runnable)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -151,6 +152,7 @@ go run ./cmd/register-tee \
     -p "$EXT_PROXY_URL" \
     -h "${EXT_PROXY_HOST_URL:-$EXT_PROXY_URL}" \
     -ep "$NORMAL_PROXY_URL" \
+    -command "${REGISTER_TEE_COMMAND:-rRap}" \
     -state "$PROJECT_DIR/config/register-tee.state" \
     || die "Register TEE failed"
 
