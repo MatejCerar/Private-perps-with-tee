@@ -47,6 +47,12 @@ services:
       - SIGN_PORT=7701
       - EXTENSION_PORT=7702
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # Hyperliquid config — sourced from .env; the two secrets have no default.
+      - HYPERLIQUID_URL=${HYPERLIQUID_URL:-https://api.hyperliquid-testnet.xyz}
+      - HL_MASTER_SEED=${HL_MASTER_SEED}
+      - HL_TREASURY_KEY=${HL_TREASURY_KEY}
+      - HL_MAX_DEPOSIT_USD=${HL_MAX_DEPOSIT_USD:-1000}
+      - HL_MAX_TOTAL_DEPOSIT_USD=${HL_MAX_TOTAL_DEPOSIT_USD:-5000}
     depends_on:
       - ext-proxy
 
