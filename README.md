@@ -453,6 +453,8 @@ docker compose -f docker-compose.yaml -f docker-compose.coston2.yaml down
 
 This repository implements a Flare Compute Extension that lets users trade on Hyperliquid (spot + perps) by sending plain on-chain instructions on Flare. The TEE holds a dedicated Hyperliquid account per user, executes their actions on Hyperliquid's testnet, and the user never bridges funds off Flare.
 
+For the full on-chain e2e runbook on Coston2 (deploy → register → drive deposit/trade/withdraw from on-chain transactions → verify on Hyperliquid), see [docs/hyperliquid.md](docs/hyperliquid.md#11-on-chain-e2e-on-coston2).
+
 ### Seeding the treasury (testnet setup)
 
 The extension uses a single treasury HL account that is funded once from the Hyperliquid testnet faucet. On a `DEPOSIT` instruction the TEE transfers mock USDC from the treasury to the user's derived HL account.

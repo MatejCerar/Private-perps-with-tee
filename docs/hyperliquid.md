@@ -333,3 +333,98 @@ One-time treasury setup:
 
 See [`../README.md`](../README.md) for the deployment runbook and the instruction payload
 reference.
+
+## 11. On-chain e2e on Coston2
+
+Sections 1–10 cover the extension and its Hyperliquid side, validated at the handler level.
+This section is the runbook for driving the **full Flare stack** on Coston2: a real on-chain
+transaction for each of `DEPOSIT → PLACE_ORDER (perp) → PLACE_ORDER (spot) → WITHDRAW`,
+relayed and threshold-signed by the live Coston2 data providers, executed by the extension,
+and verified back on Hyperliquid.
+
+> **Model (v1):** deposit carries a **trusted amount** — no token moves on Flare; the TEE
+> funds your derived HL account from the treasury. Withdraw debits the ledger and returns
+> USDC to the treasury on HL — nothing is returned to your Flare address. "Mock USDC" means
+> fictional on the Flare side; the only real money movement is on HL testnet.
+
+### Prerequisites
+
+- A **funded Coston2 key** for `DEPLOYMENT_PRIVATE_KEY` (gas): [faucet](https://faucet.flare.network/coston2).
+- A **faucet-seeded, flat treasury** (`HL_TREASURY_KEY`) with ≥100 mock USDC and **no open
+  positions** (see §10) — the startup `setAbstraction("disabled")` fails otherwise.
+- **ngrok** so the data providers can reach your extension proxy: `ngrok http 6674`.
+
+### Configure (operator-edited, secret-bearing files)
+
+Fill `.env` from `.env.example` (`DEPLOYMENT_PRIVATE_KEY`, `INITIAL_OWNER`, `HL_MASTER_SEED`,
+`HL_TREASURY_KEY`, `EXT_PROXY_URL=<ngrok>`; confirm `CHAIN_URL` = Coston2 RPC, `LOCAL_MODE=false`,
+`SIMULATED_TEE=true`, `CHAIN_ID=114`, `NORMAL_PROXY_URL=https://tee-proxy-coston2-1.flare.rocks`),
+and fill the `[db]` indexer credentials in `config/proxy/extension_proxy.coston2.docker.toml`
+(copy from the `.example`).
+
+### Deploy, start, register
+
+```bash
+./scripts/pre-build.sh
+```
+
+```bash
+docker compose -f docker-compose.yaml -f docker-compose.coston2.yaml up -d --build
+```
+
+Confirm the **HL** extension booted (not Hello World) — you should see HL-config/treasury lines:
+
+```bash
+docker compose -f docker-compose.yaml -f docker-compose.coston2.yaml logs extension-tee | grep -iE 'hyperliquid|treasury|abstraction' | head
+```
+
+```bash
+./scripts/post-build.sh
+```
+
+**Go/no-go #1 — attestation.** `post-build` runs `register-tee` (re-runnable `rRap`) with
+`SIMULATED_TEE=true` (the documented Coston2 default). If it reverts on attestation/verification,
+the Coston2 verifier may not accept the simulated code hash — obtain real enclave access, find a
+testnet allowance with the Flare team, or run the whole thing locally (see the fallback below).
+Confirm the extension id is live:
+
+```bash
+curl -s "$EXT_PROXY_URL/info" | grep -iE 'extension|codehash' | head
+```
+
+### Run the e2e with verification
+
+```bash
+cd tools && INSTRUCTION_SENDER=$(grep INSTRUCTION_SENDER ../config/extension.env | cut -d= -f2) && go run ./cmd/run-test -c "$CHAIN_URL" -p "$EXT_PROXY_URL" --instructionSender "$INSTRUCTION_SENDER" --treasury "<treasury-address>" --hlUrl "$HYPERLIQUID_URL"
+```
+
+**Go/no-go #2 — relay.** If the DEPOSIT step **times out** the result poll (rather than
+returning a status), the live data providers didn't relay this extension to threshold weight —
+use the fallback. A returned status (even an error) means relay works.
+
+Expected success log: `deposit ok` → `derived HL account: 0x… balanceUsd=100.00` →
+`verified perp position on HL: ETH szi=…` → `spot order accepted` → `withdraw ok` →
+`verified ledger balance after withdraw: 80.00` → `All tests passed.`
+
+Independently confirm the position on HL for the derived account printed above:
+
+```bash
+curl -s -X POST "$HYPERLIQUID_URL/info" -H 'content-type: application/json' -d '{"type":"clearinghouseState","user":"<derived-hl-address>"}' | head -c 800
+```
+
+### Fallback — local smoke-test
+
+If either go/no-go fails, isolate the extension from Coston2 by running the same round-trip
+locally, where `LOCAL_MODE=true` skips attestation and the sibling `e2e/` stack provides the
+relay:
+
+```bash
+cd ../e2e/docker && docker compose up -d
+```
+
+```bash
+./scripts/full-setup.sh --chain local --test
+```
+
+If the local round-trip passes but Coston2 doesn't, the failure is environmental (attestation
+policy or data-provider relay coverage) — take the specific revert/timeout to the Flare team.
