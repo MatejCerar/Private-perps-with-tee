@@ -14,6 +14,7 @@ import (
 	"math"
 	"math/big"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum"
@@ -39,6 +40,15 @@ type Client struct {
 	eth     *ethclient.Client
 	chainID *big.Int
 	erc20   abi.ABI
+
+	// sendMu serializes sendTx across goroutines. Concurrent deposits/withdraws
+	// share a single sender key (the reserve), so without serialization two
+	// sendTx calls can read the same PendingNonceAt and collide ("nonce too low"
+	// / replacement). Holding the mutex across the whole read-nonce -> send ->
+	// wait-mined sequence makes reserve txs safe to issue concurrently at the
+	// cost of serializing them. A pipelined nonce manager that reserves nonces
+	// without waiting for mining is a future throughput optimization.
+	sendMu sync.Mutex
 }
 
 // New dials the given Arbitrum RPC URL and reads the chain ID.
@@ -132,8 +142,12 @@ func (c *Client) SendETH(ctx context.Context, from *ecdsa.PrivateKey, to common.
 
 // sendTx builds, signs, sends, and waits for a legacy transaction. A nil/empty
 // `data` with a positive `value` is a plain ETH transfer; otherwise it is a
-// contract call.
+// contract call. It holds c.sendMu for the whole sequence so concurrent calls
+// sharing the same sender key (the reserve) do not race on the nonce.
 func (c *Client) sendTx(ctx context.Context, from *ecdsa.PrivateKey, to common.Address, value *big.Int, data []byte) (common.Hash, error) {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+
 	fromAddr := crypto.PubkeyToAddress(from.PublicKey)
 
 	nonce, err := c.eth.PendingNonceAt(ctx, fromAddr)

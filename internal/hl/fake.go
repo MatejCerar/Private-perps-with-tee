@@ -16,6 +16,7 @@ type FakeAccount struct {
 	PerpBal     float64
 	PosSnapshot PositionsSnapshot
 	OrderErr    error
+	WithdrawErr error
 
 	SentUSD         []USDSend
 	Withdrawals     []USDSend
@@ -49,7 +50,7 @@ func (f *FakeAccount) SendUSD(_ context.Context, dest string, amount float64) er
 
 func (f *FakeAccount) Withdraw(_ context.Context, dest string, amount float64) error {
 	f.Withdrawals = append(f.Withdrawals, USDSend{Dest: dest, Amount: amount})
-	return nil
+	return f.WithdrawErr
 }
 
 func (f *FakeAccount) ClassTransfer(_ context.Context, amount float64, toPerp bool) error {

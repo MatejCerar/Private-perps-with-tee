@@ -18,11 +18,16 @@ import (
 	teetypes "github.com/flare-foundation/tee-node/pkg/types"
 )
 
-// Bridge-funding tunables.
+// Bridge-funding tunables. The timeouts are vars (not consts) so tests can
+// shorten them; the tolerance is a true constant.
 const (
-	depositCreditTolerance = 1.0             // USDC; a deposit may credit slightly less
-	hlCreditTimeout        = 4 * time.Minute // HL finalizes a deposit in ~1 min
-	reserveFundTimeout     = 2 * time.Minute
+	depositCreditTolerance = 1.0 // USDC; a deposit may credit slightly less
+)
+
+var (
+	hlCreditTimeout    = 4 * time.Minute // HL finalizes a deposit in ~1 min
+	reserveFundTimeout = 2 * time.Minute
+	hlCreditPoll       = 10 * time.Second // waitForHLCredit poll interval
 )
 
 // Gas dust sent to a user's Arbitrum address so it can pay for its own Bridge2
@@ -49,6 +54,9 @@ func (e *Extension) processDepositBridge(a teetypes.Action, df *instruction.Data
 	if req.UsdAmount <= 0 {
 		return buildResult(a, df, nil, 0, fmt.Errorf("usdAmount must be positive"))
 	}
+	if req.UsdAmount < config.MinDepositUSD {
+		return buildResult(a, df, nil, 0, fmt.Errorf("deposit %.2f below HL minimum %.2f (sub-min deposits are not credited and lost)", req.UsdAmount, config.MinDepositUSD))
+	}
 	if req.UsdAmount > config.MaxDepositUSD {
 		return buildResult(a, df, nil, 0, fmt.Errorf("deposit %.2f exceeds per-deposit cap %.2f", req.UsdAmount, config.MaxDepositUSD))
 	}
@@ -69,7 +77,14 @@ func (e *Extension) processDepositBridge(a teetypes.Action, df *instruction.Data
 	ctx := context.Background()
 	units := arb.USDToUnits(req.UsdAmount)
 
-	// 1. Ensure the user's Arbitrum address can pay for its own deposit tx.
+	// 1. Ensure the reserve holds the USDC to fund this deposit BEFORE spending
+	//    any gas on the user, so a short reserve fails cleanly with no ETH
+	//    stranded at the user's address. Refills from HL when auto-refill is on.
+	if err := e.ensureReserveFor(ctx, req.UsdAmount); err != nil {
+		return buildResult(a, df, nil, 0, err)
+	}
+
+	// 2. Ensure the user's Arbitrum address can pay for its own deposit tx.
 	uEth, err := e.arb.ETHBalance(ctx, userAddr)
 	if err != nil {
 		return buildResult(a, df, nil, 0, fmt.Errorf("reading user gas: %w", err))
@@ -80,7 +95,7 @@ func (e *Extension) processDepositBridge(a teetypes.Action, df *instruction.Data
 		}
 	}
 
-	// 2. Reserve positions the deposit USDC at the user's own Arbitrum address
+	// 3. Reserve positions the deposit USDC at the user's own Arbitrum address
 	//    (Bridge2 credits the sender, so it must originate from the user).
 	if _, err := e.arb.TransferUSDC(ctx, e.reserveKey, e.usdcAddr, userAddr, units); err != nil {
 		return buildResult(a, df, nil, 0, fmt.Errorf("funding user from reserve: %w", err))
@@ -89,7 +104,7 @@ func (e *Extension) processDepositBridge(a teetypes.Action, df *instruction.Data
 		return buildResult(a, df, nil, 0, fmt.Errorf("waiting for reserve funding: %w", err))
 	}
 
-	// 3. Deposit to Bridge2 and wait for HL to credit the user's account.
+	// 4. Deposit to Bridge2 and wait for HL to credit the user's account.
 	before, err := hlTotalUSD(ctx, acct)
 	if err != nil {
 		return buildResult(a, df, nil, 0, fmt.Errorf("reading HL balance: %w", err))
@@ -98,7 +113,12 @@ func (e *Extension) processDepositBridge(a teetypes.Action, df *instruction.Data
 		return buildResult(a, df, nil, 0, fmt.Errorf("bridge deposit: %w", err))
 	}
 	if err := waitForHLCredit(ctx, acct, before+req.UsdAmount-depositCreditTolerance, hlCreditTimeout); err != nil {
-		return buildResult(a, df, nil, 0, fmt.Errorf("waiting for HL credit: %w", err))
+		// The USDC has already left the user's address for Bridge2; HL may still
+		// credit it after we return this error. The ledger is NOT credited, so a
+		// retry can double-credit once the late deposit lands — reconciliation
+		// (Task 1.5) must reconcile the ledger against real HL balances to close
+		// this drift. Fail loudly for now.
+		return buildResult(a, df, nil, 0, fmt.Errorf("waiting for HL credit (USDC may still credit late; ledger not debited/credited): %w", err))
 	}
 
 	e.led.Credit(user, req.UsdAmount)
@@ -138,6 +158,67 @@ func (e *Extension) processWithdrawBridge(a teetypes.Action, df *instruction.Dat
 	return buildResult(a, df, data, 1, nil)
 }
 
+// ensureReserveFor ensures the reserve holds at least needUSD of USDC on
+// Arbitrum before the handler spends any gas on the user. If it is short and
+// ReserveAutoRefill is enabled, it tops up from the reserve's HL balance
+// (spot->perp, then withdraw3) and waits for the USDC to land. If it is still
+// short after that (or auto-refill is off), it returns an error so the deposit
+// fails cleanly with no ETH stranded at the user's address.
+func (e *Extension) ensureReserveFor(ctx context.Context, needUSD float64) error {
+	bal, err := e.arb.USDCBalance(ctx, e.usdcAddr, e.reserveAddr)
+	if err != nil {
+		return fmt.Errorf("read reserve USDC: %w", err)
+	}
+	if arb.UnitsToUSD(bal) >= needUSD {
+		return nil
+	}
+	if !config.ReserveAutoRefill {
+		return fmt.Errorf("reserve USDC %.2f < needed %.2f (set HL_RESERVE_AUTO_REFILL=true to top up from the reserve's HL balance)", arb.UnitsToUSD(bal), needUSD)
+	}
+	target := config.ReserveRefillFloorUSD
+	if needUSD+10 > target {
+		target = needUSD + 10
+	}
+	if err := e.refillReserve(ctx, target); err != nil {
+		return err
+	}
+	bal, err = e.arb.USDCBalance(ctx, e.usdcAddr, e.reserveAddr)
+	if err != nil {
+		return fmt.Errorf("re-read reserve USDC: %w", err)
+	}
+	if arb.UnitsToUSD(bal) < needUSD {
+		return fmt.Errorf("reserve USDC still %.2f < %.2f after refill (fund the reserve's HL account)", arb.UnitsToUSD(bal), needUSD)
+	}
+	return nil
+}
+
+// refillReserve tops up the reserve's Arbitrum USDC to >= targetUSD by moving
+// the reserve's HL spot balance to perp and withdraw3-ing to the reserve's
+// Arbitrum address. Mirrors the bootstrap in testing/arb_loop_test.go. The
+// reserve's HL account must hold the balance; withdraw3 has a flat ~1 USDC fee.
+func (e *Extension) refillReserve(ctx context.Context, targetUSD float64) error {
+	bal, err := e.arb.USDCBalance(ctx, e.usdcAddr, e.reserveAddr)
+	if err != nil {
+		return fmt.Errorf("read reserve USDC: %w", err)
+	}
+	have := arb.UnitsToUSD(bal)
+	if have >= targetUSD {
+		return nil
+	}
+	move := targetUSD - have + 3 // +3 covers the flat withdraw fee
+	if err := e.reserveHL.ClassTransfer(ctx, move, true); err != nil {
+		return fmt.Errorf("reserve spot->perp: %w", err)
+	}
+	if err := e.reserveHL.Withdraw(ctx, e.reserveAddr.Hex(), move-2); err != nil {
+		return fmt.Errorf("reserve withdraw3: %w", err)
+	}
+	want := arb.USDToUnits(targetUSD - 2)
+	if _, err := e.arb.WaitForUSDCBalance(ctx, e.usdcAddr, e.reserveAddr, want, 10*time.Second, 6*time.Minute); err != nil {
+		return fmt.Errorf("wait for reserve top-up: %w", err)
+	}
+	return nil
+}
+
 // hlTotalUSD returns the account's total USDC across perp (Core) and spot,
 // robust to whether a bridge deposit lands in perp or is reported in spot
 // (unified mode).
@@ -164,7 +245,7 @@ func waitForHLCredit(ctx context.Context, a hl.Account, target float64, timeout 
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(10 * time.Second):
+		case <-time.After(hlCreditPoll):
 		}
 	}
 }

@@ -49,6 +49,7 @@ type Extension struct {
 	reserveAddr common.Address
 	usdcAddr    common.Address
 	bridgeAddr  common.Address
+	reserveHL   hl.Account // reserve's HL account, for auto-refilling Arbitrum USDC via withdraw3
 
 	accounts map[common.Address]hl.Account // cache: flare addr -> HL account
 }
@@ -128,6 +129,7 @@ func NewWithBridge(extensionPort, signPort int, f hl.Factory, seed []byte, ac Ar
 	e.reserveAddr = crypto.PubkeyToAddress(reserveKey.PublicKey)
 	e.usdcAddr = usdc
 	e.bridgeAddr = bridge
+	e.reserveHL = f.Account(reserveKey, e.reserveAddr.Hex())
 	return e
 }
 

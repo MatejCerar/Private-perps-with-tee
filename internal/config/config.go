@@ -40,6 +40,16 @@ var (
 	ArbUSDCAddress   = "0x1baAbB04529D43a73232B713C0FE471f7c7334d5" // HL testnet mock USDC (Arbitrum Sepolia)
 	HLBridge2Address = "0x08cfc1B6b2dCF36A1480b99353A354AA8AC56f89" // HL testnet Bridge2 (Arbitrum Sepolia)
 	ArbReserveKeyHex string                                         // reserve key; defaults to HL_TREASURY_KEY
+
+	// MinDepositUSD is the HL Bridge2 minimum deposit. Deposits below this are
+	// not credited and are lost forever, so the handler rejects them upstream.
+	MinDepositUSD = 5.0
+	// ReserveAutoRefill enables topping up the reserve's Arbitrum USDC from its
+	// HL balance (spot->perp, then withdraw3) when it dips below ReserveRefillFloorUSD.
+	// Off by default so behavior is explicit; the operator can enable it once the
+	// reserve holds a buffer on the HL side.
+	ReserveAutoRefill    = false
+	ReserveRefillFloorUSD = 50.0
 )
 
 // FundingMode selects how DEPOSIT/WITHDRAW move funds: "treasury" (legacy
@@ -66,6 +76,21 @@ func LoadArbConfig() {
 	}
 	if v := os.Getenv("HL_FUNDING_MODE"); v != "" {
 		FundingMode = v
+	}
+	if v := os.Getenv("HL_MIN_DEPOSIT_USD"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			MinDepositUSD = f
+		}
+	}
+	if v := os.Getenv("HL_RESERVE_AUTO_REFILL"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			ReserveAutoRefill = b
+		}
+	}
+	if v := os.Getenv("HL_RESERVE_REFILL_FLOOR_USD"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			ReserveRefillFloorUSD = f
+		}
 	}
 }
 
