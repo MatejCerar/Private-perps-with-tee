@@ -31,6 +31,44 @@ var (
 	MarketSlippage     = 0.05
 )
 
+// Arbitrum / bridge settings for the Hyperliquid funding path (populated by
+// LoadArbConfig). Defaults target Arbitrum Sepolia and the HL testnet Bridge2.
+// These deposit/withdraw funds via the real HL bridge instead of the legacy
+// treasury spotSend path.
+var (
+	ArbitrumRPCURL   = "https://sepolia-rollup.arbitrum.io/rpc"
+	ArbUSDCAddress   = "0x1baAbB04529D43a73232B713C0FE471f7c7334d5" // HL testnet mock USDC (Arbitrum Sepolia)
+	HLBridge2Address = "0x08cfc1B6b2dCF36A1480b99353A354AA8AC56f89" // HL testnet Bridge2 (Arbitrum Sepolia)
+	ArbReserveKeyHex string                                         // reserve key; defaults to HL_TREASURY_KEY
+)
+
+// FundingMode selects how DEPOSIT/WITHDRAW move funds: "treasury" (legacy
+// spotSend from a shared HL treasury) or "bridge" (real Arbitrum Bridge2
+// deposit + withdraw3). Defaults to "treasury" for backward compatibility.
+var FundingMode = "treasury"
+
+// LoadArbConfig reads Arbitrum-side settings for the bridge funding path.
+// Optional: the legacy treasury/spotSend deposit path does not use these.
+// ARB_RESERVE_KEY defaults to HL_TREASURY_KEY so the faucet-funded treasury can
+// double as the Arbitrum reserve on testnet.
+func LoadArbConfig() {
+	if v := os.Getenv("ARBITRUM_RPC_URL"); v != "" {
+		ArbitrumRPCURL = v
+	}
+	if v := os.Getenv("ARB_USDC_ADDRESS"); v != "" {
+		ArbUSDCAddress = v
+	}
+	if v := os.Getenv("HL_BRIDGE2_ADDRESS"); v != "" {
+		HLBridge2Address = v
+	}
+	if ArbReserveKeyHex = os.Getenv("ARB_RESERVE_KEY"); ArbReserveKeyHex == "" {
+		ArbReserveKeyHex = os.Getenv("HL_TREASURY_KEY")
+	}
+	if v := os.Getenv("HL_FUNDING_MODE"); v != "" {
+		FundingMode = v
+	}
+}
+
 // LoadHLConfig reads HL-specific settings from the environment.
 // Returns an error if required secrets are missing.
 func LoadHLConfig() error {
@@ -60,8 +98,8 @@ func LoadHLConfig() error {
 
 // Defaults.
 var (
-	ExtensionPort  = 8080
-	SignPort       = 9090
+	ExtensionPort   = 8080
+	SignPort        = 9090
 	TypesServerPort = 8100
 )
 

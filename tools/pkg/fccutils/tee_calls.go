@@ -19,7 +19,7 @@ import (
 	"github.com/pkg/errors"
 )
 
-const repeats = 15
+const repeats = 40 // ~80s at 2s/attempt; covers HL calls + async result posting
 
 func TeeInfo(nodeURL string) (*types.SignedTeeInfoResponse, error) {
 	result, err := http.Get(nodeURL + "/info")
@@ -86,32 +86,41 @@ func TeeProxyId(teeInfo *types.SignedTeeInfoResponse) (common.Address, common.Ad
 	return teeID, proxyID, nil
 }
 
+// ActionResult polls the proxy for an action's result. Long actions are
+// processed asynchronously: the extension first returns a "pending" result
+// (status 2) and posts the terminal result (status 0/1) once the work
+// completes. So we keep polling past pending until a terminal status or the
+// attempt budget is exhausted.
 func ActionResult(nodeURL string, actionID common.Hash) (*types.ActionResponse, error) {
-	var result *http.Response
-	var err error
+	const pendingStatus = 2
+	var last *types.ActionResponse
 	for range repeats {
-		result, err = http.Get(nodeURL + "/action/result/" + actionID.Hex())
-		if err == nil && result.StatusCode == http.StatusOK {
-			break
+		result, err := http.Get(nodeURL + "/action/result/" + actionID.Hex())
+		if err != nil {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		if result.StatusCode != http.StatusOK {
+			result.Body.Close()
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		var response types.ActionResponse
+		derr := json.NewDecoder(result.Body).Decode(&response)
+		result.Body.Close()
+		if derr != nil {
+			return nil, errors.Errorf("%s", derr)
+		}
+		last = &response
+		if response.Result.Status != pendingStatus {
+			return &response, nil
 		}
 		time.Sleep(2 * time.Second)
 	}
-	if err != nil {
-		return nil, errors.Errorf("%s", err)
+	if last != nil {
+		return last, nil // still pending after the budget; let the caller report it
 	}
-	if result.StatusCode != http.StatusOK {
-		logger.Warnf("action result status not ok: got: %d for %s, %s", result.StatusCode, actionID.Hex(), nodeURL)
-		return nil, errors.Errorf("action result status not ok, got: %d", result.StatusCode)
-	}
-	defer result.Body.Close()
-
-	var response types.ActionResponse
-	err = json.NewDecoder(result.Body).Decode(&response)
-	if err != nil {
-		return nil, errors.Errorf("%s", err)
-	}
-
-	return &response, nil
+	return nil, errors.Errorf("action result never ready for %s at %s", actionID.Hex(), nodeURL)
 }
 
 func SetProxyUrl(configurationPort int, proxyPort int) error {

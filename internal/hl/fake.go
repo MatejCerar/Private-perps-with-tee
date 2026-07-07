@@ -18,6 +18,7 @@ type FakeAccount struct {
 	OrderErr    error
 
 	SentUSD         []USDSend
+	Withdrawals     []USDSend
 	Orders          []OrderReq
 	Cancels         []int64
 	Transfers       []float64
@@ -43,6 +44,11 @@ func (f *FakeAccount) Cancel(_ context.Context, _ string, oid int64) error {
 
 func (f *FakeAccount) SendUSD(_ context.Context, dest string, amount float64) error {
 	f.SentUSD = append(f.SentUSD, USDSend{Dest: dest, Amount: amount})
+	return nil
+}
+
+func (f *FakeAccount) Withdraw(_ context.Context, dest string, amount float64) error {
+	f.Withdrawals = append(f.Withdrawals, USDSend{Dest: dest, Amount: amount})
 	return nil
 }
 

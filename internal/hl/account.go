@@ -53,6 +53,7 @@ type Account interface {
 	PlaceOrder(ctx context.Context, req OrderReq) (OrderResult, error)
 	Cancel(ctx context.Context, coin string, oid int64) error
 	SendUSD(ctx context.Context, dest string, amount float64) error
+	Withdraw(ctx context.Context, dest string, amount float64) error
 	ClassTransfer(ctx context.Context, amount float64, toPerp bool) error
 	SpotUSDC(ctx context.Context) (float64, error)
 	PerpWithdrawable(ctx context.Context) (float64, error)
@@ -197,6 +198,22 @@ func (a *realAccount) SendUSD(ctx context.Context, dest string, amount float64) 
 	}
 	if resp != nil && resp.Status != "ok" {
 		return fmt.Errorf("spotSend rejected: status=%q error=%q", resp.Status, resp.Error)
+	}
+	return nil
+}
+
+// Withdraw sends USDC from the account's HL balance to an Arbitrum address via
+// the withdraw3 action. HL validators deliver native USDC on Arbitrum in
+// ~3-4 minutes, minus a small flat fee. This is the real settlement path used
+// to fund the Arbitrum reserve and to return funds to users (vs the v1 stub
+// that spotSent back to a treasury on HL).
+func (a *realAccount) Withdraw(ctx context.Context, dest string, amount float64) error {
+	resp, err := a.ex.WithdrawFromBridge(ctx, amount, dest)
+	if err != nil {
+		return err
+	}
+	if resp != nil && resp.Status != "ok" {
+		return fmt.Errorf("withdraw3 rejected: status=%q error=%q", resp.Status, resp.Error)
 	}
 	return nil
 }

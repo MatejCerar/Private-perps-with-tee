@@ -5,9 +5,12 @@ import (
 	"crypto/ecdsa"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"net/http"
 	"sync"
+	"time"
 
+	"extension-scaffold/internal/arb"
 	"extension-scaffold/internal/config"
 	"extension-scaffold/internal/hl"
 	"extension-scaffold/internal/keys"
@@ -30,31 +33,69 @@ type Extension struct {
 	Server   *http.Server
 	signPort int
 
-	factory      hl.Factory
+	factory    hl.Factory
+	masterSeed []byte
+	led        *ledger.Ledger
+
+	fundingMode string // "treasury" | "bridge"
+
+	// treasury-mode funding (legacy spotSend from a shared HL treasury)
 	treasury     hl.Account
 	treasuryAddr string
-	masterSeed   []byte
-	led          *ledger.Ledger
+
+	// bridge-mode funding (real Arbitrum Bridge2 deposit + withdraw3)
+	arb         ArbClient
+	reserveKey  *ecdsa.PrivateKey
+	reserveAddr common.Address
+	usdcAddr    common.Address
+	bridgeAddr  common.Address
 
 	accounts map[common.Address]hl.Account // cache: flare addr -> HL account
 }
 
-// New is the production constructor. It loads HL config and builds the
-// treasury account from the configured key.
+// ArbClient is the Arbitrum-side surface the bridge funding path needs. Real
+// deployments use *arb.Client; tests can substitute a fake.
+type ArbClient interface {
+	USDCBalance(ctx context.Context, token, addr common.Address) (*big.Int, error)
+	ETHBalance(ctx context.Context, addr common.Address) (*big.Int, error)
+	TransferUSDC(ctx context.Context, from *ecdsa.PrivateKey, token, to common.Address, units *big.Int) (common.Hash, error)
+	SendETH(ctx context.Context, from *ecdsa.PrivateKey, to common.Address, wei *big.Int) (common.Hash, error)
+	DepositToBridge(ctx context.Context, from *ecdsa.PrivateKey, usdc, bridge common.Address, units *big.Int) (common.Hash, error)
+	WaitForUSDCBalance(ctx context.Context, token, addr common.Address, min *big.Int, poll, timeout time.Duration) (*big.Int, error)
+}
+
+// New is the production constructor. It loads config and wires the funding
+// path selected by HL_FUNDING_MODE ("treasury" legacy, or "bridge").
 func New(extensionPort, signPort int) *Extension {
 	if err := config.LoadHLConfig(); err != nil {
 		panic(fmt.Sprintf("HL config: %v", err))
 	}
+	config.LoadArbConfig()
 	seed, err := keys.MustHexSeed(config.MasterSeedHex)
 	if err != nil {
 		panic(fmt.Sprintf("master seed: %v", err))
 	}
+	factory := hl.NewRealFactory(config.HyperliquidURL)
+
+	if config.FundingMode == "bridge" {
+		ac, err := arb.New(context.Background(), config.ArbitrumRPCURL)
+		if err != nil {
+			panic(fmt.Sprintf("arbitrum client: %v", err))
+		}
+		reserveKey, err := crypto.HexToECDSA(config.ArbReserveKeyHex)
+		if err != nil {
+			panic(fmt.Sprintf("reserve key: %v", err))
+		}
+		return NewWithBridge(extensionPort, signPort, factory, seed, ac, reserveKey,
+			common.HexToAddress(config.ArbUSDCAddress), common.HexToAddress(config.HLBridge2Address))
+	}
+
+	// treasury mode (legacy)
 	treasuryKey, err := crypto.HexToECDSA(config.TreasuryKeyHex)
 	if err != nil {
 		panic(fmt.Sprintf("treasury key: %v", err))
 	}
 	treasuryAddr := crypto.PubkeyToAddress(treasuryKey.PublicKey).Hex()
-	factory := hl.NewRealFactory(config.HyperliquidURL)
 	treasury := factory.Account(treasuryKey, treasuryAddr)
 
 	// Best-effort: put the treasury in standard mode so it can spotSend to
@@ -65,23 +106,38 @@ func New(extensionPort, signPort int) *Extension {
 		logger.Warnf("treasury SetAbstraction(standard): %v (ensure treasury is flat and in standard mode)", err)
 	}
 
-	return buildExtension(extensionPort, signPort, factory, treasury, treasuryAddr, seed)
+	return NewWith(extensionPort, signPort, factory, treasury, treasuryAddr, seed)
 }
 
-// NewWith is the test constructor with injected dependencies.
+// NewWith is the test constructor for treasury (legacy) funding mode.
 func NewWith(extensionPort, signPort int, f hl.Factory, treasury hl.Account, treasuryAddr string, seed []byte) *Extension {
-	return buildExtension(extensionPort, signPort, f, treasury, treasuryAddr, seed)
+	e := buildExtension(extensionPort, signPort, f, seed)
+	e.fundingMode = "treasury"
+	e.treasury = treasury
+	e.treasuryAddr = treasuryAddr
+	return e
 }
 
-func buildExtension(extensionPort, signPort int, f hl.Factory, treasury hl.Account, treasuryAddr string, seed []byte) *Extension {
+// NewWithBridge builds an extension in bridge funding mode with injected deps
+// (a real *arb.Client in production, a fake in tests).
+func NewWithBridge(extensionPort, signPort int, f hl.Factory, seed []byte, ac ArbClient, reserveKey *ecdsa.PrivateKey, usdc, bridge common.Address) *Extension {
+	e := buildExtension(extensionPort, signPort, f, seed)
+	e.fundingMode = "bridge"
+	e.arb = ac
+	e.reserveKey = reserveKey
+	e.reserveAddr = crypto.PubkeyToAddress(reserveKey.PublicKey)
+	e.usdcAddr = usdc
+	e.bridgeAddr = bridge
+	return e
+}
+
+func buildExtension(extensionPort, signPort int, f hl.Factory, seed []byte) *Extension {
 	e := &Extension{
-		signPort:     signPort,
-		factory:      f,
-		treasury:     treasury,
-		treasuryAddr: treasuryAddr,
-		masterSeed:   seed,
-		led:          ledger.New(),
-		accounts:     map[common.Address]hl.Account{},
+		signPort:   signPort,
+		factory:    f,
+		masterSeed: seed,
+		led:        ledger.New(),
+		accounts:   map[common.Address]hl.Account{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /state", e.stateHandler)

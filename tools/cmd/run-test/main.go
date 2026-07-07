@@ -99,8 +99,10 @@ func main() {
 		fccutils.FatalWithCause(errors.Errorf("parsing deposit response: %s", err))
 	}
 	logger.Infof("derived HL account: %s  balanceUsd=%.2f", dep.HLAddress, dep.BalanceUsd)
-	if dep.BalanceUsd != 100 {
-		fccutils.FatalWithCause(errors.Errorf("expected ledger balance 100 after deposit, got %.2f", dep.BalanceUsd))
+	// Ledger is cumulative in memory across runs (until the extension restarts),
+	// so assert the deposit credited at least its amount rather than an exact total.
+	if dep.BalanceUsd < 100 {
+		fccutils.FatalWithCause(errors.Errorf("expected ledger balance >= 100 after a 100 deposit, got %.2f", dep.BalanceUsd))
 	}
 
 	// --- Step 2: PERP market order -------------------------------------------
