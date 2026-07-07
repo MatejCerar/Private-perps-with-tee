@@ -3,9 +3,12 @@
 package extension
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"math"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -19,6 +22,34 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 )
+
+const hlTestnetURL = "https://api.hyperliquid-testnet.xyz"
+
+// hlAllMids fetches current mid prices from HL testnet (/info allMids). Keys are
+// perp coin names (e.g. "ETH") and spot pair names/ids; values are prices. Used
+// to price a resting limit order at half the mid — always below mid (so it never
+// fills) and well within HL's "80% away from reference" cap (so it is accepted).
+func hlAllMids(t *testing.T) map[string]float64 {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"type": "allMids"})
+	resp, err := http.Post(hlTestnetURL+"/info", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("allMids: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	var m map[string]string
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("allMids decode: %v (%s)", err, string(raw))
+	}
+	out := make(map[string]float64, len(m))
+	for k, v := range m {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			out[k] = f
+		}
+	}
+	return out
+}
 
 func liveEnv(k, def string) string {
 	if v := os.Getenv(k); v != "" {
@@ -109,7 +140,7 @@ func TestBridgeHandlersLive(t *testing.T) {
 	usdc := common.HexToAddress(liveEnv("ARB_USDC_ADDRESS", "0x1baAbB04529D43a73232B713C0FE471f7c7334d5"))
 	bridge := common.HexToAddress(liveEnv("HL_BRIDGE2_ADDRESS", "0x08cfc1B6b2dCF36A1480b99353A354AA8AC56f89"))
 
-	factory := hl.NewRealFactory("https://api.hyperliquid-testnet.xyz")
+	factory := hl.NewRealFactory(hlTestnetURL)
 	seed := crypto.FromECDSA(reserveKey) // deterministic throwaway user, per reserve
 	e := NewWithBridge(0, 0, factory, seed, client, reserveKey, usdc, bridge)
 
@@ -182,11 +213,18 @@ func TestBridgeHandlersLive(t *testing.T) {
 		t.Logf("order ok: %s", string(res.Data))
 	})
 
-	// A far-from-mid limit buy rests on the book; capture its OrderID, cancel it
-	// through the handler, and confirm the ledger reflects resting -> cancelled.
+	// A limit buy at half the ETH mid rests on the book (always < mid so it never
+	// fills, and 50% < HL's 80%-from-reference cap so it is accepted); capture its
+	// OrderID, cancel it, and confirm the ledger reflects resting -> cancelled.
 	t.Run("limit_cancel", func(t *testing.T) {
+		mid := hlAllMids(t)["ETH"]
+		if mid < 2 {
+			t.Fatalf("implausible ETH mid %.4f from allMids", mid)
+		}
+		px := float64(int(mid * 0.5))            // integer price: valid tick, ~50% below mid
+		size := math.Ceil((12.0/px)*1000) / 1000 // ~$12 notional, above HL's ~$10 min
 		msg := envelope(t, user, types.PlaceOrderRequest{
-			Market: "perp", Coin: "ETH", IsBuy: true, OrderType: "limit", Size: 0.01, LimitPx: 100,
+			Market: "perp", Coin: "ETH", IsBuy: true, OrderType: "limit", Size: size, LimitPx: px,
 		})
 		a, df := actionFor(msg)
 		res := e.processPlaceOrder(a, df)
@@ -211,16 +249,21 @@ func TestBridgeHandlersLive(t *testing.T) {
 		if st := orderStatus(e, user, ord.OrderID); st != "cancelled" {
 			t.Fatalf("ledger status for %d = %q, want cancelled", ord.OrderID, st)
 		}
-		t.Logf("limit rest+cancel ok: oid=%d", ord.OrderID)
+		t.Logf("limit rest+cancel ok: oid=%d px=%.2f size=%.4f", ord.OrderID, px, size)
 	})
 
-	// Spot buy through the handler. Testnet spot pairs/liquidity and the $10 min
-	// order value vary, so tune via SPOT_COIN/SPOT_SIZE/SPOT_PX and treat a
-	// rejection as non-fatal — this subtest documents/drives the spot path.
+	// Spot buy through the handler, drawing from the same unified pool. Prefer a
+	// resting price at half the pair's live mid (from allMids); fall back to the
+	// env knobs if the pair isn't in allMids. Testnet spot pairs/liquidity vary, so
+	// a rejection stays non-fatal — this subtest drives/documents the spot path.
 	t.Run("spot", func(t *testing.T) {
 		coin := liveEnv("SPOT_COIN", "PURR/USDC")
 		size, _ := strconv.ParseFloat(liveEnv("SPOT_SIZE", "250"), 64)
 		px, _ := strconv.ParseFloat(liveEnv("SPOT_PX", "0.05"), 64)
+		if mid := hlAllMids(t)[coin]; mid > 0 {
+			px = mid * 0.5                         // rests below mid, within the 80% cap
+			size = math.Ceil((12.0/px)*100) / 100  // ~$12 notional
+		}
 		msg := envelope(t, user, types.PlaceOrderRequest{
 			Market: "spot", Coin: coin, IsBuy: true, OrderType: "limit", Size: size, LimitPx: px,
 		})
