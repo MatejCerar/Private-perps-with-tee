@@ -5,6 +5,7 @@ package extension
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -64,9 +65,21 @@ func ensureReserveUSDC(t *testing.T, ctx context.Context, client *arb.Client, re
 	}
 }
 
-// TestBridgeHandlersLive drives the real extension action handlers in bridge
-// funding mode against Arbitrum Sepolia + HL testnet: DEPOSIT (Bridge2) → ORDER
-// (perp) → WITHDRAW (withdraw3) → close, asserting handler status + ledger.
+// TestBridgeHandlersLive is the consolidated Phase-1 live gate. It drives the
+// real extension action handlers in bridge funding mode against Arbitrum Sepolia
+// + HL testnet and asserts, in one pass, the live behavior each unit-tested task
+// left as a "remaining testnet gate":
+//
+//	deposit      [1.6] Bridge2 deposit funds the account through the reserve.
+//	unified      [1.2] the fresh account was switched to HL unified mode live
+//	             (SetAbstraction(unifiedAccount) accepted on a flat account).
+//	order        [1.2/1.3] a perp order fills from the single deposit — no sweep.
+//	limit_cancel [1.3] a resting limit order + CANCEL reflect resting→cancelled.
+//	spot         [1.2/1.3] a spot order draws from the same unified pool (tunable).
+//	withdraw     [1.6] withdraw3 returns funds to the reserve.
+//	close        leaves the perp position flat for clean re-runs.
+//	reconcile    [1.5] ReconcileAll converges the ledger to real HL equity, then a
+//	             simulated late-deposit-credit drift (real > book) is healed upward.
 //
 //	HL_TREASURY_KEY=... [ARB_RESERVE_KEY=...] \
 //	  go test -tags hltestnet ./internal/extension/ -run TestBridgeHandlersLive -v -timeout 30m
@@ -135,6 +148,27 @@ func TestBridgeHandlersLive(t *testing.T) {
 	}) {
 		t.Fatal("deposit failed; aborting")
 	}
+
+	// [1.2] The deposit handler switched the fresh account to HL unified mode
+	// (ensureUnified). Membership in unifiedSet means SetAbstraction(unifiedAccount)
+	// was accepted live on the flat account — the key 1.2 risk. Perp + spot then
+	// fill from the single collateral pool (order/spot subtests) with no class
+	// transfer. If this fails, move the SetAbstraction call to after the first
+	// credit (see the plan's Task 1.2 gate note).
+	t.Run("unified", func(t *testing.T) {
+		if _, ok := e.unifiedSet.Load(user); !ok {
+			t.Fatal("account not switched to unified: SetAbstraction(unifiedAccount) was rejected on the fresh account")
+		}
+		acct, err := e.accountFor(user)
+		if err != nil {
+			t.Fatal(err)
+		}
+		total, err := hlTotalUSD(ctx, acct)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("unified confirmed: SetAbstraction(unified) accepted; HL equity=%.4f (single pool)", total)
+	})
 
 	t.Run("order", func(t *testing.T) {
 		msg := envelope(t, user, types.PlaceOrderRequest{
@@ -232,5 +266,55 @@ func TestBridgeHandlersLive(t *testing.T) {
 		if res.Status != 1 {
 			t.Logf("close order status=%d log=%s (non-fatal)", res.Status, res.Log)
 		}
+	})
+
+	// [1.5] Reconciliation against real HL balances. After trading + the withdraw
+	// fee, the ledger has drifted from real HL equity; ReconcileAll must converge
+	// it. Then simulate the Task 1.6 late-deposit-credit drift (HL credited but the
+	// handler missed it → real > book) and confirm Reconcile heals the ledger
+	// upward — the exact scenario unit-tested by TestReconcileLateDepositCredit,
+	// here against a real HL account. Runs last, with the position flat, so real
+	// equity is stable (no open-position mark-price noise).
+	t.Run("reconcile", func(t *testing.T) {
+		acct, err := e.accountFor(user)
+		if err != nil {
+			t.Fatal(err)
+		}
+		const tol = 1.0 // USD; loose to absorb equity moving between reads live
+
+		// Converge natural drift (P&L, ~1 USDC withdraw fee).
+		e.ReconcileAll(ctx)
+		real, err := hlTotalUSD(ctx, acct)
+		if err != nil {
+			t.Fatal(err)
+		}
+		book := e.led.Balance(user)
+		if d := math.Abs(book - real); d > tol {
+			t.Fatalf("after ReconcileAll, ledger=%.4f vs real=%.4f drift=%.4f > %.2f", book, real, d, tol)
+		}
+		t.Logf("reconcile converged: ledger=%.4f real=%.4f", book, real)
+
+		// Simulate a deposit HL credited but the handler missed (ledger behind).
+		const simDrift = 3.0
+		e.led.Adjust(user, -simDrift)
+		if behind := e.led.Balance(user); behind >= book {
+			t.Fatalf("sim drift did not lower the ledger: %.4f (was %.4f)", behind, book)
+		}
+		delta, err := e.Reconcile(ctx, user)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if delta <= 0 {
+			t.Fatalf("expected a positive heal delta for a behind ledger, got %.4f", delta)
+		}
+		healed := e.led.Balance(user)
+		real2, err := hlTotalUSD(ctx, acct)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d := math.Abs(healed - real2); d > tol {
+			t.Fatalf("after heal, ledger=%.4f vs real=%.4f drift=%.4f > %.2f", healed, real2, d, tol)
+		}
+		t.Logf("late-credit heal ok: delta=+%.4f ledger=%.4f real=%.4f", delta, healed, real2)
 	})
 }
