@@ -33,6 +33,7 @@ type OrderReq struct {
 type OrderResult struct {
 	Raw     json.RawMessage
 	OrderID int64
+	Status  string // "resting" (on the book) | "filled" (immediately) | "" (unknown)
 }
 
 type Position struct {
@@ -176,8 +177,10 @@ func (a *realAccount) PlaceOrder(ctx context.Context, req OrderReq) (OrderResult
 	res := OrderResult{Raw: raw}
 	if status.Resting != nil {
 		res.OrderID = status.Resting.Oid
+		res.Status = "resting"
 	} else if status.Filled != nil {
 		res.OrderID = int64(status.Filled.Oid)
+		res.Status = "filled"
 	}
 	return res, nil
 }

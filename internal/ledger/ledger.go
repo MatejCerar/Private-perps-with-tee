@@ -10,11 +10,12 @@ import (
 
 type OrderRecord struct {
 	InstructionID string  `json:"instructionId"`
+	OrderID       int64   `json:"orderId"`
 	Coin          string  `json:"coin"`
 	Market        string  `json:"market"`
 	IsBuy         bool    `json:"isBuy"`
 	Size          float64 `json:"size"`
-	Status        string  `json:"status"`
+	Status        string  `json:"status"` // "submitted" | "resting" | "filled" | "cancelled"
 }
 
 type Snapshot struct {
@@ -90,6 +91,23 @@ func (l *Ledger) AddOrder(addr common.Address, rec OrderRecord) {
 		o = o[len(o)-20:]
 	}
 	l.orders[addr] = o
+}
+
+// MarkCancelled sets the status of the most recent recorded order matching oid
+// to "cancelled" and returns whether a match was found. Best-effort reflection:
+// a cancel for an order that has aged out of the recent-orders window (or was
+// never recorded) simply returns false.
+func (l *Ledger) MarkCancelled(addr common.Address, oid int64) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	recs := l.orders[addr]
+	for i := len(recs) - 1; i >= 0; i-- {
+		if recs[i].OrderID == oid {
+			recs[i].Status = "cancelled"
+			return true
+		}
+	}
+	return false
 }
 
 func (l *Ledger) SnapshotFor(addr common.Address) Snapshot {

@@ -133,9 +133,14 @@ func (e *Extension) processPlaceOrder(a teetypes.Action, df *instruction.DataFix
 		return buildResult(a, df, nil, 0, fmt.Errorf("placing order: %w", err))
 	}
 
+	status := result.Status
+	if status == "" {
+		status = "submitted"
+	}
 	e.led.AddOrder(user, ledger.OrderRecord{
-		InstructionID: df.InstructionID.Hex(), Coin: req.Coin, Market: req.Market,
-		IsBuy: req.IsBuy, Size: req.Size, Status: "submitted",
+		InstructionID: df.InstructionID.Hex(), OrderID: result.OrderID,
+		Coin: req.Coin, Market: req.Market,
+		IsBuy: req.IsBuy, Size: req.Size, Status: status,
 	})
 
 	resp := types.OrderResponse{Accepted: true, OrderID: result.OrderID, Detail: json.RawMessage(result.Raw)}
@@ -162,6 +167,7 @@ func (e *Extension) processCancel(a teetypes.Action, df *instruction.DataFixed) 
 	if err := acct.Cancel(context.Background(), req.Coin, req.OrderID); err != nil {
 		return buildResult(a, df, nil, 0, fmt.Errorf("cancelling: %w", err))
 	}
+	e.led.MarkCancelled(user, req.OrderID) // best-effort recent-orders reflection
 	data, _ := json.Marshal(types.CancelResponse{Cancelled: true})
 	return buildResult(a, df, data, 1, nil)
 }

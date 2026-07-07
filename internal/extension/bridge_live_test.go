@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +24,17 @@ func liveEnv(k, def string) string {
 		return v
 	}
 	return def
+}
+
+// orderStatus returns the recorded status of the most recent ledger order with
+// the given HL OrderID, or "" if none is recorded.
+func orderStatus(e *Extension, user common.Address, oid int64) string {
+	for _, r := range e.led.SnapshotFor(user).RecentOrders {
+		if r.OrderID == oid {
+			return r.Status
+		}
+	}
+	return ""
 }
 
 // ensureReserveUSDC tops up the Arbitrum reserve to >= minUSD by moving spot->perp
@@ -134,6 +146,66 @@ func TestBridgeHandlersLive(t *testing.T) {
 			t.Fatalf("order status=%d log=%s", res.Status, res.Log)
 		}
 		t.Logf("order ok: %s", string(res.Data))
+	})
+
+	// A far-from-mid limit buy rests on the book; capture its OrderID, cancel it
+	// through the handler, and confirm the ledger reflects resting -> cancelled.
+	t.Run("limit_cancel", func(t *testing.T) {
+		msg := envelope(t, user, types.PlaceOrderRequest{
+			Market: "perp", Coin: "ETH", IsBuy: true, OrderType: "limit", Size: 0.01, LimitPx: 100,
+		})
+		a, df := actionFor(msg)
+		res := e.processPlaceOrder(a, df)
+		if res.Status != 1 {
+			t.Fatalf("limit order status=%d log=%s", res.Status, res.Log)
+		}
+		var ord types.OrderResponse
+		if err := json.Unmarshal(res.Data, &ord); err != nil {
+			t.Fatal(err)
+		}
+		if ord.OrderID == 0 {
+			t.Fatalf("expected a resting OrderID (order may have filled): %s", string(res.Data))
+		}
+		if st := orderStatus(e, user, ord.OrderID); st != "resting" {
+			t.Fatalf("ledger status for %d = %q, want resting", ord.OrderID, st)
+		}
+		cmsg := envelope(t, user, types.CancelRequest{Coin: "ETH", OrderID: ord.OrderID})
+		ca, cdf := actionFor(cmsg)
+		if cres := e.processCancel(ca, cdf); cres.Status != 1 {
+			t.Fatalf("cancel status=%d log=%s", cres.Status, cres.Log)
+		}
+		if st := orderStatus(e, user, ord.OrderID); st != "cancelled" {
+			t.Fatalf("ledger status for %d = %q, want cancelled", ord.OrderID, st)
+		}
+		t.Logf("limit rest+cancel ok: oid=%d", ord.OrderID)
+	})
+
+	// Spot buy through the handler. Testnet spot pairs/liquidity and the $10 min
+	// order value vary, so tune via SPOT_COIN/SPOT_SIZE/SPOT_PX and treat a
+	// rejection as non-fatal — this subtest documents/drives the spot path.
+	t.Run("spot", func(t *testing.T) {
+		coin := liveEnv("SPOT_COIN", "PURR/USDC")
+		size, _ := strconv.ParseFloat(liveEnv("SPOT_SIZE", "250"), 64)
+		px, _ := strconv.ParseFloat(liveEnv("SPOT_PX", "0.05"), 64)
+		msg := envelope(t, user, types.PlaceOrderRequest{
+			Market: "spot", Coin: coin, IsBuy: true, OrderType: "limit", Size: size, LimitPx: px,
+		})
+		a, df := actionFor(msg)
+		res := e.processPlaceOrder(a, df)
+		if res.Status != 1 {
+			t.Logf("spot order status=%d log=%s (non-fatal: testnet spot pair/liquidity/min-value varies; tune SPOT_COIN/SPOT_SIZE/SPOT_PX)", res.Status, res.Log)
+			return
+		}
+		t.Logf("spot order ok: %s", string(res.Data))
+		// Cancel it back out so the account stays clean for re-runs.
+		var ord types.OrderResponse
+		if json.Unmarshal(res.Data, &ord) == nil && ord.OrderID != 0 {
+			cmsg := envelope(t, user, types.CancelRequest{Coin: coin, OrderID: ord.OrderID})
+			ca, cdf := actionFor(cmsg)
+			if cres := e.processCancel(ca, cdf); cres.Status == 1 {
+				t.Logf("spot resting order %d cancelled", ord.OrderID)
+			}
+		}
 	})
 
 	t.Run("withdraw", func(t *testing.T) {

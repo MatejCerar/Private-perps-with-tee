@@ -161,6 +161,101 @@ func TestProcessCancel(t *testing.T) {
 	}
 }
 
+func TestProcessOrderRecordsFilledStatusAndOrderID(t *testing.T) {
+	seed := bytes.Repeat([]byte{0x01}, 32)
+	user := common.HexToAddress("0x5a55555555555555555555555555555555555555")
+	e := NewWith(0, 0, &hl.FakeFactory{}, &hl.FakeAccount{Addr: "0xT"}, "0xT", seed)
+	acct, _ := e.accountFor(user)
+	fa := acct.(*hl.FakeAccount)
+	fa.NextOrderID = 4242
+
+	msg := envelope(t, user, types.PlaceOrderRequest{
+		Market: "perp", Coin: "BTC", IsBuy: true, OrderType: "market", Size: 0.01,
+	})
+	a, df := actionFor(msg)
+	if res := e.processPlaceOrder(a, df); res.Status != 1 {
+		t.Fatalf("status=%d log=%s", res.Status, res.Log)
+	}
+	recs := e.led.SnapshotFor(user).RecentOrders
+	if len(recs) != 1 {
+		t.Fatalf("expected 1 recorded order, got %d", len(recs))
+	}
+	if recs[0].Status != "filled" {
+		t.Fatalf("market order status = %q, want filled", recs[0].Status)
+	}
+	if recs[0].OrderID != 4242 {
+		t.Fatalf("recorded OrderID = %d, want 4242", recs[0].OrderID)
+	}
+}
+
+func TestProcessLimitOrderRecordsRestingStatus(t *testing.T) {
+	seed := bytes.Repeat([]byte{0x01}, 32)
+	user := common.HexToAddress("0x5b55555555555555555555555555555555555555")
+	e := NewWith(0, 0, &hl.FakeFactory{}, &hl.FakeAccount{Addr: "0xT"}, "0xT", seed)
+
+	msg := envelope(t, user, types.PlaceOrderRequest{
+		Market: "perp", Coin: "ETH", IsBuy: true, OrderType: "limit", Size: 0.01, LimitPx: 1000,
+	})
+	a, df := actionFor(msg)
+	if res := e.processPlaceOrder(a, df); res.Status != 1 {
+		t.Fatalf("status=%d log=%s", res.Status, res.Log)
+	}
+	recs := e.led.SnapshotFor(user).RecentOrders
+	if len(recs) != 1 || recs[0].Status != "resting" {
+		t.Fatalf("limit order should record resting, got %+v", recs)
+	}
+}
+
+func TestProcessCancelMarksOrderCancelled(t *testing.T) {
+	seed := bytes.Repeat([]byte{0x01}, 32)
+	user := common.HexToAddress("0x5c55555555555555555555555555555555555555")
+	e := NewWith(0, 0, &hl.FakeFactory{}, &hl.FakeAccount{Addr: "0xT"}, "0xT", seed)
+	acct, _ := e.accountFor(user)
+	fa := acct.(*hl.FakeAccount)
+	fa.NextOrderID = 7777
+
+	// Place a resting limit order, then cancel it by its OrderID.
+	ordMsg := envelope(t, user, types.PlaceOrderRequest{
+		Market: "perp", Coin: "ETH", IsBuy: true, OrderType: "limit", Size: 0.01, LimitPx: 1000,
+	})
+	a, df := actionFor(ordMsg)
+	if res := e.processPlaceOrder(a, df); res.Status != 1 {
+		t.Fatalf("order status=%d log=%s", res.Status, res.Log)
+	}
+
+	cancelMsg := envelope(t, user, types.CancelRequest{Coin: "ETH", OrderID: 7777})
+	ca, cdf := actionFor(cancelMsg)
+	if res := e.processCancel(ca, cdf); res.Status != 1 {
+		t.Fatalf("cancel status=%d log=%s", res.Status, res.Log)
+	}
+	if len(fa.Cancels) != 1 || fa.Cancels[0] != 7777 {
+		t.Fatalf("HL cancel not issued for 7777: %+v", fa.Cancels)
+	}
+	recs := e.led.SnapshotFor(user).RecentOrders
+	if len(recs) != 1 || recs[0].Status != "cancelled" {
+		t.Fatalf("recorded order should be marked cancelled, got %+v", recs)
+	}
+}
+
+func TestProcessReduceOnlyPassThrough(t *testing.T) {
+	seed := bytes.Repeat([]byte{0x01}, 32)
+	user := common.HexToAddress("0x5d55555555555555555555555555555555555555")
+	e := NewWith(0, 0, &hl.FakeFactory{}, &hl.FakeAccount{Addr: "0xT"}, "0xT", seed)
+	acct, _ := e.accountFor(user)
+	fa := acct.(*hl.FakeAccount)
+
+	msg := envelope(t, user, types.PlaceOrderRequest{
+		Market: "perp", Coin: "ETH", OrderType: "market", ReduceOnly: true, Size: 0.01,
+	})
+	a, df := actionFor(msg)
+	if res := e.processPlaceOrder(a, df); res.Status != 1 {
+		t.Fatalf("status=%d log=%s", res.Status, res.Log)
+	}
+	if len(fa.Orders) != 1 || !fa.Orders[0].ReduceOnly {
+		t.Fatalf("reduceOnly not passed through to the account: %+v", fa.Orders)
+	}
+}
+
 func TestProcessWithdrawDebitsAndReturnsToTreasury(t *testing.T) {
 	seed := bytes.Repeat([]byte{0x01}, 32)
 	user := common.HexToAddress("0x6666666666666666666666666666666666666666")

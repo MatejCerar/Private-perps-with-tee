@@ -17,6 +17,7 @@ type FakeAccount struct {
 	PosSnapshot PositionsSnapshot
 	OrderErr    error
 	WithdrawErr error
+	NextOrderID int64 // OrderID returned by PlaceOrder (defaults to 12345 when 0)
 
 	SentUSD         []USDSend
 	Withdrawals     []USDSend
@@ -35,7 +36,16 @@ func (f *FakeAccount) PlaceOrder(_ context.Context, req OrderReq) (OrderResult, 
 		return OrderResult{}, f.OrderErr
 	}
 	f.Orders = append(f.Orders, req)
-	return OrderResult{OrderID: 12345}, nil
+	oid := f.NextOrderID
+	if oid == 0 {
+		oid = 12345
+	}
+	// Mirror the real adapter: market orders fill immediately, limit orders rest.
+	status := "filled"
+	if req.OrderType == "limit" {
+		status = "resting"
+	}
+	return OrderResult{OrderID: oid, Status: status}, nil
 }
 
 func (f *FakeAccount) Cancel(_ context.Context, _ string, oid int64) error {
