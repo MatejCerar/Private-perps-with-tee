@@ -52,6 +52,13 @@ type Extension struct {
 	reserveHL   hl.Account // reserve's HL account, for auto-refilling Arbitrum USDC via withdraw3
 
 	accounts map[common.Address]hl.Account // cache: flare addr -> HL account
+
+	// userLocks serializes per-user ops (one in-flight deposit/withdraw/order
+	// chain per user) so same-user txs don't race on the user's own Arbitrum
+	// nonce and the ledger isn't mutated mid-reconcile. Reconciliation TryLocks
+	// these and skips busy users.
+	userLocks     sync.Map // common.Address -> *sync.Mutex
+	reconcileStop chan struct{}
 }
 
 // ArbClient is the Arbitrum-side surface the bridge funding path needs. Real
@@ -87,8 +94,10 @@ func New(extensionPort, signPort int) *Extension {
 		if err != nil {
 			panic(fmt.Sprintf("reserve key: %v", err))
 		}
-		return NewWithBridge(extensionPort, signPort, factory, seed, ac, reserveKey,
+		e := NewWithBridge(extensionPort, signPort, factory, seed, ac, reserveKey,
 			common.HexToAddress(config.ArbUSDCAddress), common.HexToAddress(config.HLBridge2Address))
+		e.startReconciler()
+		return e
 	}
 
 	// treasury mode (legacy)
@@ -135,17 +144,26 @@ func NewWithBridge(extensionPort, signPort int, f hl.Factory, seed []byte, ac Ar
 
 func buildExtension(extensionPort, signPort int, f hl.Factory, seed []byte) *Extension {
 	e := &Extension{
-		signPort:   signPort,
-		factory:    f,
-		masterSeed: seed,
-		led:        ledger.New(),
-		accounts:   map[common.Address]hl.Account{},
+		signPort:      signPort,
+		factory:       f,
+		masterSeed:    seed,
+		led:           ledger.New(),
+		accounts:      map[common.Address]hl.Account{},
+		reconcileStop: make(chan struct{}),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /state", e.stateHandler)
 	mux.HandleFunc("POST /action", e.actionHandler)
 	e.Server = &http.Server{Addr: fmt.Sprintf(":%d", extensionPort), Handler: mux}
 	return e
+}
+
+// userMutex returns the per-user lock. The handlers Lock it (serialize same-user
+// ops); Reconcile TryLocks it (skips busy users). LoadOrStore keeps one mutex per
+// user address for the life of the Extension.
+func (e *Extension) userMutex(user common.Address) *sync.Mutex {
+	v, _ := e.userLocks.LoadOrStore(user, &sync.Mutex{})
+	return v.(*sync.Mutex)
 }
 
 // accountFor returns the cached (or newly derived) HL account for a Flare user.
@@ -215,5 +233,17 @@ func (e *Extension) processAction(action teetypes.Action) (int, []byte) {
 		return e.handleAsync(action, df, e.processWithdraw)
 	default:
 		return http.StatusNotImplemented, []byte(fmt.Sprintf("unsupported op command: %s", df.OPCommand.Hex()))
+	}
+}
+
+// Stop halts the background reconciler goroutine (started by New when
+// ReconcileIntervalSeconds > 0). Idempotent; safe to call even if the reconciler
+// was never started. The HTTP server is stopped separately via e.Server.Shutdown.
+func (e *Extension) Stop() {
+	select {
+	case <-e.reconcileStop:
+		// already closed
+	default:
+		close(e.reconcileStop)
 	}
 }

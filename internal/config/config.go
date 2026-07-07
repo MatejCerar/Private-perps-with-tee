@@ -50,6 +50,13 @@ var (
 	// reserve holds a buffer on the HL side.
 	ReserveAutoRefill    = false
 	ReserveRefillFloorUSD = 50.0
+
+	// ReconcileToleranceUSD is the drift below which reconciliation leaves the
+	// ledger untouched (float dust). The ~1 USDC withdraw3 fee is well above it
+	// and so reconciles. ReconcileIntervalSeconds is the background tick cadence;
+	// 0 disables the background reconciler (on-demand Reconcile still works).
+	ReconcileToleranceUSD   = 0.01
+	ReconcileIntervalSeconds = 120
 )
 
 // FundingMode selects how DEPOSIT/WITHDRAW move funds: "treasury" (legacy
@@ -90,6 +97,16 @@ func LoadArbConfig() {
 	if v := os.Getenv("HL_RESERVE_REFILL_FLOOR_USD"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			ReserveRefillFloorUSD = f
+		}
+	}
+	if v := os.Getenv("HL_RECONCILE_TOLERANCE_USD"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			ReconcileToleranceUSD = f
+		}
+	}
+	if v := os.Getenv("HL_RECONCILE_INTERVAL_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			ReconcileIntervalSeconds = n
 		}
 	}
 }

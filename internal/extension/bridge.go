@@ -64,6 +64,13 @@ func (e *Extension) processDepositBridge(a teetypes.Action, df *instruction.Data
 		return buildResult(a, df, nil, 0, fmt.Errorf("deposit exceeds global cap"))
 	}
 
+	// Serialize same-user ops: prevent the user's own Arbitrum nonce from
+	// racing across concurrent deposits, and keep the ledger stable against
+	// background reconciliation (which TryLocks and skips a busy user).
+	mu := e.userMutex(user)
+	mu.Lock()
+	defer mu.Unlock()
+
 	priv, err := keys.DeriveUserKey(e.masterSeed, user)
 	if err != nil {
 		return buildResult(a, df, nil, 0, fmt.Errorf("deriving key: %w", err))
@@ -142,6 +149,12 @@ func (e *Extension) processWithdrawBridge(a teetypes.Action, df *instruction.Dat
 	if req.UsdAmount <= 0 {
 		return buildResult(a, df, nil, 0, fmt.Errorf("usdAmount must be positive"))
 	}
+	// Serialize same-user ops (see processDepositBridge) so the debit + withdraw3
+	// chain is atomic w.r.t. other ops and background reconciliation.
+	mu := e.userMutex(user)
+	mu.Lock()
+	defer mu.Unlock()
+
 	if err := e.led.Debit(user, req.UsdAmount); err != nil {
 		return buildResult(a, df, nil, 0, err)
 	}

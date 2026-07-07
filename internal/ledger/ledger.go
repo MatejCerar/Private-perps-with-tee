@@ -51,6 +51,21 @@ func (l *Ledger) Debit(addr common.Address, amt float64) error {
 	return nil
 }
 
+// Adjust applies delta to the balance (may be negative) and clamps the result
+// at 0. It returns the new balance. Used by reconciliation for downward
+// corrections (P&L loss, withdraw fee) where the delta magnitude is bounded by
+// the current balance — real HL equity is never negative, so the clamp only
+// guards against float noise. Upward corrections use Credit.
+func (l *Ledger) Adjust(addr common.Address, delta float64) float64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.balances[addr] += delta
+	if l.balances[addr] < 0 {
+		l.balances[addr] = 0
+	}
+	return l.balances[addr]
+}
+
 func (l *Ledger) Balance(addr common.Address) float64 {
 	l.mu.RLock()
 	defer l.mu.RUnlock()

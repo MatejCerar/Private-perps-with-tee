@@ -22,6 +22,7 @@ func main() {
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sigChan
+		e.Stop() // stop the background reconciler
 		ctx, cancel := context.WithTimeout(context.Background(), config.TimeoutShutdown)
 		defer cancel()
 		_ = e.Server.Shutdown(ctx)
