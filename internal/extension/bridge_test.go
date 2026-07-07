@@ -384,6 +384,82 @@ func TestBridgeDepositAutoRefillTopsUpFromHL(t *testing.T) {
 	}
 }
 
+func TestBridgeDepositSetsUnifiedOnce(t *testing.T) {
+	// The first bridge deposit switches the account to HL unified mode; a second
+	// deposit must NOT switch again (idempotent, tracked in unifiedSet).
+	e, arc, _, reserveAddr := bridgeTestEnv(t)
+	user, userFA := userFake(t, e)
+	arc.usdc[reserveAddr] = arb.USDToUnits(1000)
+	arc.depositHook = func(units *big.Int) {
+		userFA.PosSnapshot.PerpAccountValueUSD += arb.UnitsToUSD(units)
+	}
+
+	a, df := depositMsg(t, user, 20)
+	if res := e.processDeposit(a, df); res.Status != 1 {
+		t.Fatalf("first deposit status=%d log=%s", res.Status, res.Log)
+	}
+	if len(userFA.Abstractions) != 1 || userFA.Abstractions[0] != hl.AbstractionUnified {
+		t.Fatalf("expected one SetAbstraction(unified), got %+v", userFA.Abstractions)
+	}
+
+	a, df = depositMsg(t, user, 20)
+	if res := e.processDeposit(a, df); res.Status != 1 {
+		t.Fatalf("second deposit status=%d log=%s", res.Status, res.Log)
+	}
+	if len(userFA.Abstractions) != 1 {
+		t.Fatalf("SetAbstraction must run once per account, got %+v", userFA.Abstractions)
+	}
+}
+
+func TestBridgePerpOrderNoSweep(t *testing.T) {
+	// Bridge accounts are unified: a perp order must NOT sweep spot->perp even
+	// when the fake reports a spot balance. Leverage is still set; order placed.
+	e, _, _, _ := bridgeTestEnv(t)
+	user, fa := userFake(t, e)
+	fa.SpotBal = 30 // would be swept in treasury mode; must be ignored in bridge mode
+
+	msg := envelope(t, user, types.PlaceOrderRequest{
+		Market: "perp", Coin: "BTC", IsBuy: true, OrderType: "market", Size: 0.01, Leverage: 5,
+	})
+	a, df := actionFor(msg)
+	res := e.processPlaceOrder(a, df)
+	if res.Status != 1 {
+		t.Fatalf("status=%d log=%s", res.Status, res.Log)
+	}
+	if len(fa.Transfers) != 0 {
+		t.Fatalf("bridge (unified) perp order must not class-transfer, got %+v", fa.Transfers)
+	}
+	if len(fa.Leverages) != 1 || fa.Leverages[0] != 5 {
+		t.Fatalf("leverage not set: %+v", fa.Leverages)
+	}
+	if len(fa.Orders) != 1 || fa.Orders[0].Coin != "BTC" {
+		t.Fatalf("order not placed: %+v", fa.Orders)
+	}
+}
+
+func TestBridgeSpotBuyNoSweep(t *testing.T) {
+	// Bridge accounts are unified: a spot buy must NOT sweep perp->spot even when
+	// the fake reports free perp margin.
+	e, _, _, _ := bridgeTestEnv(t)
+	user, fa := userFake(t, e)
+	fa.PerpBal = 20 // would be swept in treasury mode; must be ignored in bridge mode
+
+	msg := envelope(t, user, types.PlaceOrderRequest{
+		Market: "spot", Coin: "PURR/USDC", IsBuy: true, OrderType: "limit", Size: 10, LimitPx: 2,
+	})
+	a, df := actionFor(msg)
+	res := e.processPlaceOrder(a, df)
+	if res.Status != 1 {
+		t.Fatalf("status=%d log=%s", res.Status, res.Log)
+	}
+	if len(fa.Transfers) != 0 {
+		t.Fatalf("bridge (unified) spot buy must not class-transfer, got %+v", fa.Transfers)
+	}
+	if len(fa.Orders) != 1 || fa.Orders[0].Coin != "PURR/USDC" {
+		t.Fatalf("order not placed: %+v", fa.Orders)
+	}
+}
+
 func TestBridgeWithdrawRejectsOverBalance(t *testing.T) {
 	e, _, _, _ := bridgeTestEnv(t)
 	user, _ := userFake(t, e)

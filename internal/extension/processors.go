@@ -52,10 +52,16 @@ func (e *Extension) processDeposit(a teetypes.Action, df *instruction.DataFixed)
 
 // processPlaceOrder handles PLACE_ORDER instructions for both spot and perp markets.
 // For perp orders with Leverage>0 it calls SetLeverage before placing.
-// For spot buys it reads the current spot USDC balance and calls ClassTransfer(notional-spot, false)
-// when the balance is short. For market buys the notional uses Size as a rough floor because the
-// fill price is unknown pre-trade (§10 "spot funding is approximate" simplification — v1 acceptable;
-// a follow-up can fetch the mid price for a tighter estimate).
+//
+// Collateral routing depends on the funding mode:
+//   - bridge: user accounts are unified (one collateral pool, set at first
+//     deposit), so the order fills from the single bridge deposit directly — no
+//     class transfer.
+//   - treasury (legacy, standard mode): deposits land in spot via spotSend, so it
+//     sweeps collateral to whichever side the order needs first. For market buys
+//     the notional uses Size as a rough floor because the fill price is unknown
+//     pre-trade (§10 "spot funding is approximate" — v1 acceptable; a follow-up
+//     can fetch the mid price for a tighter estimate).
 func (e *Extension) processPlaceOrder(a teetypes.Action, df *instruction.DataFixed) teetypes.ActionResult {
 	user, payload, err := types.DecodeEnvelope(df.OriginalMessage)
 	if err != nil {
@@ -81,34 +87,39 @@ func (e *Extension) processPlaceOrder(a teetypes.Action, df *instruction.DataFix
 	}
 	ctx := context.Background()
 
-	// Per-user accounts run in standard mode with separate spot/perp balances,
-	// and deposits land in spot (via spotSend). Sweep collateral to whichever
-	// side this order needs before placing it. Only transfer above a small dust
-	// threshold to avoid needless actions.
-	const dustUSD = 1.0
-	if req.Market == "perp" {
-		if req.Leverage > 0 {
-			if err := acct.SetLeverage(ctx, req.Coin, req.Leverage, req.IsCross); err != nil {
-				return buildResult(a, df, nil, 0, fmt.Errorf("set leverage: %w", err))
+	// Set leverage up front for perp orders (both funding modes).
+	if req.Market == "perp" && req.Leverage > 0 {
+		if err := acct.SetLeverage(ctx, req.Coin, req.Leverage, req.IsCross); err != nil {
+			return buildResult(a, df, nil, 0, fmt.Errorf("set leverage: %w", err))
+		}
+	}
+
+	// Bridge-mode accounts are unified: spot and perp share one collateral pool,
+	// so the order fills from the single (perp-landed) bridge deposit with no
+	// sweep. Treasury (legacy) accounts run in standard mode with deposits in
+	// spot, so sweep collateral to whichever side this order needs, above a small
+	// dust threshold to avoid needless class transfers.
+	if e.fundingMode != "bridge" {
+		const dustUSD = 1.0
+		if req.Market == "perp" {
+			spot, err := acct.SpotUSDC(ctx)
+			if err != nil {
+				return buildResult(a, df, nil, 0, fmt.Errorf("read spot balance: %w", err))
 			}
-		}
-		spot, err := acct.SpotUSDC(ctx)
-		if err != nil {
-			return buildResult(a, df, nil, 0, fmt.Errorf("read spot balance: %w", err))
-		}
-		if spot > dustUSD {
-			if err := acct.ClassTransfer(ctx, spot, true); err != nil {
-				return buildResult(a, df, nil, 0, fmt.Errorf("spot->perp transfer: %w", err))
+			if spot > dustUSD {
+				if err := acct.ClassTransfer(ctx, spot, true); err != nil {
+					return buildResult(a, df, nil, 0, fmt.Errorf("spot->perp transfer: %w", err))
+				}
 			}
-		}
-	} else if req.IsBuy { // spot buy needs USDC in the spot wallet
-		perp, err := acct.PerpWithdrawable(ctx)
-		if err != nil {
-			return buildResult(a, df, nil, 0, fmt.Errorf("read perp balance: %w", err))
-		}
-		if perp > dustUSD {
-			if err := acct.ClassTransfer(ctx, perp, false); err != nil {
-				return buildResult(a, df, nil, 0, fmt.Errorf("perp->spot transfer: %w", err))
+		} else if req.IsBuy { // spot buy needs USDC in the spot wallet
+			perp, err := acct.PerpWithdrawable(ctx)
+			if err != nil {
+				return buildResult(a, df, nil, 0, fmt.Errorf("read perp balance: %w", err))
+			}
+			if perp > dustUSD {
+				if err := acct.ClassTransfer(ctx, perp, false); err != nil {
+					return buildResult(a, df, nil, 0, fmt.Errorf("perp->spot transfer: %w", err))
+				}
 			}
 		}
 	}

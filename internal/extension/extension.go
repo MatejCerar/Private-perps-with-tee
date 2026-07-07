@@ -59,6 +59,10 @@ type Extension struct {
 	// these and skips busy users.
 	userLocks     sync.Map // common.Address -> *sync.Mutex
 	reconcileStop chan struct{}
+
+	// unifiedSet records which bridge-mode user accounts have been switched to
+	// HL unified mode (done once at first deposit). common.Address -> struct{}.
+	unifiedSet sync.Map
 }
 
 // ArbClient is the Arbitrum-side surface the bridge funding path needs. Real
@@ -164,6 +168,24 @@ func buildExtension(extensionPort, signPort int, f hl.Factory, seed []byte) *Ext
 func (e *Extension) userMutex(user common.Address) *sync.Mutex {
 	v, _ := e.userLocks.LoadOrStore(user, &sync.Mutex{})
 	return v.(*sync.Mutex)
+}
+
+// ensureUnified puts a bridge-mode user account into HL's unified account mode
+// exactly once, the first time it is funded. Unified merges the spot and perp
+// balances into a single collateral pool, so both spot and perp orders fill from
+// the bridge deposit (which lands in perp/Core) without a usdClassTransfer sweep.
+// Best-effort and idempotent: the mode switch is only valid while the account is
+// flat (true at first deposit), so a failure is logged and retried on the next
+// deposit rather than failing the deposit. The caller must hold the user lock.
+func (e *Extension) ensureUnified(ctx context.Context, user common.Address, acct hl.Account) {
+	if _, done := e.unifiedSet.Load(user); done {
+		return
+	}
+	if err := acct.SetAbstraction(ctx, hl.AbstractionUnified); err != nil {
+		logger.Warnf("SetAbstraction(unified) for %s: %v (will retry on next deposit)", user.Hex(), err)
+		return
+	}
+	e.unifiedSet.Store(user, struct{}{})
 }
 
 // accountFor returns the cached (or newly derived) HL account for a Flare user.
