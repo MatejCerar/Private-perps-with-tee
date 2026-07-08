@@ -51,6 +51,59 @@ func hlAllMids(t *testing.T) map[string]float64 {
 	return out
 }
 
+// hlSpotSzDecimals returns the base token's szDecimals for a spot pair (e.g.
+// "PURR/USDC"), which defines the valid size increment: sizes must have at most
+// szDecimals decimal places (0 → whole units). Fails the test if the pair is
+// unknown so a typo'd SPOT_COIN surfaces clearly.
+func hlSpotSzDecimals(t *testing.T, pair string) int {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"type": "spotMeta"})
+	resp, err := http.Post(hlTestnetURL+"/info", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("spotMeta: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	var sm struct {
+		Tokens []struct {
+			Name       string `json:"name"`
+			SzDecimals int    `json:"szDecimals"`
+		} `json:"tokens"`
+		Universe []struct {
+			Name   string `json:"name"`
+			Tokens []int  `json:"tokens"`
+		} `json:"universe"`
+	}
+	if err := json.Unmarshal(raw, &sm); err != nil {
+		t.Fatalf("spotMeta decode: %v", err)
+	}
+	for _, u := range sm.Universe {
+		if u.Name == pair && len(u.Tokens) > 0 && u.Tokens[0] < len(sm.Tokens) {
+			return sm.Tokens[u.Tokens[0]].SzDecimals
+		}
+	}
+	t.Fatalf("spot pair %q not found in spotMeta", pair)
+	return 0
+}
+
+// roundToSigFigs rounds x to n significant figures. HL rejects prices with more
+// than 5 significant figures; 4 leaves headroom.
+func roundToSigFigs(x float64, n int) float64 {
+	if x == 0 {
+		return 0
+	}
+	mag := math.Pow(10, float64(n)-math.Ceil(math.Log10(math.Abs(x))))
+	return math.Round(x*mag) / mag
+}
+
+// ceilToDecimals rounds x UP to d decimal places (the valid size increment for a
+// token with szDecimals=d), so a computed min-notional size never rounds below
+// the exchange minimum.
+func ceilToDecimals(x float64, d int) float64 {
+	mag := math.Pow(10, float64(d))
+	return math.Ceil(x*mag) / mag
+}
+
 func liveEnv(k, def string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
@@ -252,37 +305,46 @@ func TestBridgeHandlersLive(t *testing.T) {
 		t.Logf("limit rest+cancel ok: oid=%d px=%.2f size=%.4f", ord.OrderID, px, size)
 	})
 
-	// Spot buy through the handler, drawing from the same unified pool. Prefer a
-	// resting price at half the pair's live mid (from allMids); fall back to the
-	// env knobs if the pair isn't in allMids. Testnet spot pairs/liquidity vary, so
-	// a rejection stays non-fatal — this subtest drives/documents the spot path.
+	// [1.2/1.3] Spot buy through the handler, drawing from the same unified pool.
+	// Price at half the live mid (rests below mid, within HL's 80% cap, ≤5 sig
+	// figs) and size rounded UP to the pair's szDecimals increment above the ~$10
+	// min notional. Rest → assert ledger resting → cancel → assert cancelled.
 	t.Run("spot", func(t *testing.T) {
 		coin := liveEnv("SPOT_COIN", "PURR/USDC")
-		size, _ := strconv.ParseFloat(liveEnv("SPOT_SIZE", "250"), 64)
-		px, _ := strconv.ParseFloat(liveEnv("SPOT_PX", "0.05"), 64)
-		if mid := hlAllMids(t)[coin]; mid > 0 {
-			px = mid * 0.5                         // rests below mid, within the 80% cap
-			size = math.Ceil((12.0/px)*100) / 100  // ~$12 notional
+		mid := hlAllMids(t)[coin]
+		if mid <= 0 {
+			t.Fatalf("no mid for spot pair %q (set SPOT_COIN to a listed pair)", coin)
 		}
+		szDec := hlSpotSzDecimals(t, coin)
+		px := roundToSigFigs(mid*0.5, 4)
+		size := ceilToDecimals(12.0/px, szDec) // ~$12 notional, valid size increment
 		msg := envelope(t, user, types.PlaceOrderRequest{
 			Market: "spot", Coin: coin, IsBuy: true, OrderType: "limit", Size: size, LimitPx: px,
 		})
 		a, df := actionFor(msg)
 		res := e.processPlaceOrder(a, df)
 		if res.Status != 1 {
-			t.Logf("spot order status=%d log=%s (non-fatal: testnet spot pair/liquidity/min-value varies; tune SPOT_COIN/SPOT_SIZE/SPOT_PX)", res.Status, res.Log)
-			return
+			t.Fatalf("spot order status=%d log=%s (coin=%s px=%v size=%v szDec=%d)", res.Status, res.Log, coin, px, size, szDec)
 		}
-		t.Logf("spot order ok: %s", string(res.Data))
-		// Cancel it back out so the account stays clean for re-runs.
 		var ord types.OrderResponse
-		if json.Unmarshal(res.Data, &ord) == nil && ord.OrderID != 0 {
-			cmsg := envelope(t, user, types.CancelRequest{Coin: coin, OrderID: ord.OrderID})
-			ca, cdf := actionFor(cmsg)
-			if cres := e.processCancel(ca, cdf); cres.Status == 1 {
-				t.Logf("spot resting order %d cancelled", ord.OrderID)
-			}
+		if err := json.Unmarshal(res.Data, &ord); err != nil {
+			t.Fatal(err)
 		}
+		if ord.OrderID == 0 {
+			t.Fatalf("expected a resting spot OrderID: %s", string(res.Data))
+		}
+		if st := orderStatus(e, user, ord.OrderID); st != "resting" {
+			t.Fatalf("ledger status for spot %d = %q, want resting", ord.OrderID, st)
+		}
+		cmsg := envelope(t, user, types.CancelRequest{Coin: coin, OrderID: ord.OrderID})
+		ca, cdf := actionFor(cmsg)
+		if cres := e.processCancel(ca, cdf); cres.Status != 1 {
+			t.Fatalf("spot cancel status=%d log=%s", cres.Status, cres.Log)
+		}
+		if st := orderStatus(e, user, ord.OrderID); st != "cancelled" {
+			t.Fatalf("ledger status for spot %d = %q, want cancelled", ord.OrderID, st)
+		}
+		t.Logf("spot rest+cancel ok: %s oid=%d px=%v size=%v", coin, ord.OrderID, px, size)
 	})
 
 	t.Run("withdraw", func(t *testing.T) {
@@ -359,5 +421,26 @@ func TestBridgeHandlersLive(t *testing.T) {
 			t.Fatalf("after heal, ledger=%.4f vs real=%.4f drift=%.4f > %.2f", healed, real2, d, tol)
 		}
 		t.Logf("late-credit heal ok: delta=+%.4f ledger=%.4f real=%.4f", delta, healed, real2)
+	})
+
+	// Drain the throwaway user's residual back to the reserve. Each run deposits
+	// more than it withdraws, so without this the user accrues equity and the
+	// reserve slowly bleeds. Runs after reconcile (ledger == real, position flat).
+	// Leaves ~0.5 USDC of dust; skips when the balance is too small to withdraw
+	// (HL min withdraw 2 + ~1 fee).
+	t.Run("drain", func(t *testing.T) {
+		bal := e.led.Balance(user)
+		if bal < 4 {
+			t.Logf("balance %.4f too small to drain (min withdraw 2 + fee), leaving as dust", bal)
+			return
+		}
+		amt := math.Floor((bal-0.5)*100) / 100
+		msg := envelope(t, user, types.WithdrawRequest{UsdAmount: amt})
+		a, df := actionFor(msg)
+		res := e.processWithdraw(a, df)
+		if res.Status != 1 {
+			t.Fatalf("drain withdraw status=%d log=%s", res.Status, res.Log)
+		}
+		t.Logf("drained %.2f back to reserve; user ledger now %.4f", amt, e.led.Balance(user))
 	})
 }

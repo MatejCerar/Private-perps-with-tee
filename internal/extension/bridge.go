@@ -84,11 +84,6 @@ func (e *Extension) processDepositBridge(a teetypes.Action, df *instruction.Data
 	ctx := context.Background()
 	units := arb.USDToUnits(req.UsdAmount)
 
-	// Ensure the account is in HL unified mode before the first funds land, so
-	// spot and perp orders both draw from one collateral pool (no class-transfer
-	// sweep). Best-effort while the account is flat; retried on the next deposit.
-	e.ensureUnified(ctx, user, acct)
-
 	// 1. Ensure the reserve holds the USDC to fund this deposit BEFORE spending
 	//    any gas on the user, so a short reserve fails cleanly with no ETH
 	//    stranded at the user's address. Refills from HL when auto-refill is on.
@@ -132,6 +127,13 @@ func (e *Extension) processDepositBridge(a teetypes.Action, df *instruction.Data
 		// this drift. Fail loudly for now.
 		return buildResult(a, df, nil, 0, fmt.Errorf("waiting for HL credit (USDC may still credit late; ledger not debited/credited): %w", err))
 	}
+
+	// 5. Switch the account to HL unified mode so spot and perp orders both draw
+	//    from one collateral pool (no class-transfer sweep). Must run AFTER the
+	//    first credit: HL rejects userSetAbstraction on a never-deposited account
+	//    ("Must deposit before performing actions" — observed live). Best-effort
+	//    and once per account; a failure is retried on the next deposit.
+	e.ensureUnified(ctx, user, acct)
 
 	e.led.Credit(user, req.UsdAmount)
 	resp := types.DepositResponse{HLAddress: acct.Address(), BalanceUsd: e.led.Balance(user)}

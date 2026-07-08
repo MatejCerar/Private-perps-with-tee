@@ -171,12 +171,14 @@ func (e *Extension) userMutex(user common.Address) *sync.Mutex {
 }
 
 // ensureUnified puts a bridge-mode user account into HL's unified account mode
-// exactly once, the first time it is funded. Unified merges the spot and perp
-// balances into a single collateral pool, so both spot and perp orders fill from
-// the bridge deposit (which lands in perp/Core) without a usdClassTransfer sweep.
-// Best-effort and idempotent: the mode switch is only valid while the account is
-// flat (true at first deposit), so a failure is logged and retried on the next
-// deposit rather than failing the deposit. The caller must hold the user lock.
+// exactly once, right after its first deposit credits. Unified merges the spot
+// and perp balances into a single collateral pool, so both spot and perp orders
+// fill from the bridge deposit (which lands in perp/Core) without a
+// usdClassTransfer sweep. It must run AFTER the first credit: HL rejects
+// userSetAbstraction on a never-deposited account ("Must deposit before
+// performing actions", observed live on testnet). Best-effort and idempotent: a
+// failure is logged and retried on the next deposit rather than failing the
+// deposit. The caller must hold the user lock.
 func (e *Extension) ensureUnified(ctx context.Context, user common.Address, acct hl.Account) {
 	if _, done := e.unifiedSet.Load(user); done {
 		return
