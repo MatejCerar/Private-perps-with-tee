@@ -17,6 +17,7 @@ import (
 	"extension-scaffold/internal/hl/hlsign"
 	"extension-scaffold/internal/keys"
 
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 	gohl "github.com/sonirico/go-hyperliquid"
 )
@@ -78,9 +79,44 @@ type Factory interface {
 	Account(privKey *ecdsa.PrivateKey, accountAddr string) Account
 }
 
+// SignerFactory builds accounts whose HL actions are signed via a keys.Signer
+// (tee-wallet / PMW custody), reached over the sign server — no raw key in
+// process. Selected by HL_KEY_MODE=tee-wallet.
+type SignerFactory interface {
+	AccountForSigner(signer keys.Signer) Account
+}
+
+// readOnlyKeyHex is a fixed throwaway key used ONLY to build go-hyperliquid's
+// Exchange for READ queries (Info()) in tee-wallet mode. It never signs anything
+// — all state-changing actions go through the signerExchange. Reads address the
+// account by its own address, not this key's.
+const readOnlyKeyHex = "1111111111111111111111111111111111111111111111111111111111111111"
+
 type realFactory struct{ baseURL string }
 
 func NewRealFactory(baseURL string) Factory { return &realFactory{baseURL: baseURL} }
+
+type teeWalletFactory struct{ baseURL string }
+
+// NewTeeWalletFactory returns a SignerFactory for tee-wallet custody mode.
+func NewTeeWalletFactory(baseURL string) SignerFactory { return &teeWalletFactory{baseURL: baseURL} }
+
+func (f *teeWalletFactory) AccountForSigner(signer keys.Signer) Account {
+	addr := signer.Address().Hex()
+	spotMeta := sanitizedSpotMeta(f.baseURL)
+	// Read-only Exchange (throwaway key) for Info() queries; all writes go via sx.
+	roKey, _ := crypto.HexToECDSA(readOnlyKeyHex)
+	ex := gohl.NewExchange(context.Background(), roKey, f.baseURL, nil, "", addr, spotMeta, nil)
+	sx := newSignerExchange(signer, addr, f.baseURL, ex.Info())
+	return &realAccount{
+		ex:        ex,
+		addr:      addr,
+		usdcToken: usdcTokenID(spotMeta),
+		signer:    signer,
+		sx:        sx,
+		baseURL:   f.baseURL,
+	}
+}
 
 func (f *realFactory) Account(privKey *ecdsa.PrivateKey, accountAddr string) Account {
 	// Pass a sanitized spotMeta so go-hyperliquid does not fetch it itself and
@@ -148,6 +184,12 @@ type realAccount struct {
 	privKey   *ecdsa.PrivateKey
 	signer    keys.Signer // signs HL actions; seed-derived today, TEE-custodied under C9
 	baseURL   string
+
+	// sx is non-nil in tee-wallet custody mode (HL_KEY_MODE=tee-wallet): all
+	// state-changing actions (order/cancel/leverage/withdraw/transfers) are then
+	// signed via the Signer and posted directly, since go-hyperliquid's Exchange
+	// cannot sign without the raw key. Reads still go through a.ex.Info() (no key).
+	sx *signerExchange
 }
 
 var _ Account = (*realAccount)(nil)
@@ -156,6 +198,9 @@ var _ Factory = (*realFactory)(nil)
 func (a *realAccount) Address() string { return a.addr }
 
 func (a *realAccount) PlaceOrder(ctx context.Context, req OrderReq) (OrderResult, error) {
+	if a.sx != nil {
+		return a.sx.placeOrder(ctx, req)
+	}
 	var (
 		status gohl.OrderStatus
 		err    error
@@ -195,11 +240,17 @@ func (a *realAccount) PlaceOrder(ctx context.Context, req OrderReq) (OrderResult
 }
 
 func (a *realAccount) Cancel(ctx context.Context, coin string, oid int64) error {
+	if a.sx != nil {
+		return a.sx.cancel(ctx, coin, oid)
+	}
 	_, err := a.ex.BulkCancel(ctx, []gohl.CancelOrderRequest{{Coin: coin, OrderID: oid}})
 	return err
 }
 
 func (a *realAccount) SendUSD(ctx context.Context, dest string, amount float64) error {
+	if a.sx != nil {
+		return a.sx.sendUSD(ctx, a.usdcToken, dest, amount)
+	}
 	// Unified accounts hold a single USDC balance (spot == trading collateral),
 	// so fund/withdraw via spotSend of the USDC token rather than usdSend, which
 	// targets the legacy perp sub-balance and is rejected on unified accounts.
@@ -220,6 +271,9 @@ func (a *realAccount) SendUSD(ctx context.Context, dest string, amount float64) 
 // to fund the Arbitrum reserve and to return funds to users (vs the v1 stub
 // that spotSent back to a treasury on HL).
 func (a *realAccount) Withdraw(ctx context.Context, dest string, amount float64) error {
+	if a.sx != nil {
+		return a.sx.withdraw(ctx, dest, amount)
+	}
 	resp, err := a.ex.WithdrawFromBridge(ctx, amount, dest)
 	if err != nil {
 		return err
@@ -231,6 +285,9 @@ func (a *realAccount) Withdraw(ctx context.Context, dest string, amount float64)
 }
 
 func (a *realAccount) ClassTransfer(ctx context.Context, amount float64, toPerp bool) error {
+	if a.sx != nil {
+		return a.sx.classTransfer(ctx, amount, toPerp)
+	}
 	resp, err := a.ex.UsdClassTransfer(ctx, amount, toPerp)
 	if err != nil {
 		return err
@@ -299,6 +356,9 @@ func (a *realAccount) PerpWithdrawable(ctx context.Context) (float64, error) {
 }
 
 func (a *realAccount) SetLeverage(ctx context.Context, coin string, leverage int, isCross bool) error {
+	if a.sx != nil {
+		return a.sx.setLeverage(ctx, coin, leverage, isCross)
+	}
 	_, err := a.ex.UpdateLeverage(ctx, leverage, coin, isCross)
 	return err
 }
