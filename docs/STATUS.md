@@ -21,7 +21,7 @@ live**, most of them today:
 | Ledger + reconciliation (C6) | 🟢 live | `TestBridgeHandlersLive/reconcile` (converge + drift-heal) |
 | Multi-user / concurrency (C7) | 🟢 live | `TestBridgeMultiUserLive` — 3 users parallel deposit+drain |
 | On-chain instruction path (C8) | 🟢 live (**Coston**) | `run-test`: on-chain DEPOSIT→PERP→SPOT→WITHDRAW, verified on HL |
-| PMW/Shamir custody (C9) | ❌ blocked | PMW not available yet |
+| PMW/Shamir custody (C9) | 🟡 signing foundation done | Signer abstraction (seed + tee-wallet) + HL/arb signing via Signer, all byte-identical to the raw-key path; provisioning + order-placement plumbing remain (Task 2.4) |
 | Arb One ↔ HL mainnet loop (C10) | ⏳ mainnet dust | same code as C1, mainnet config |
 | Stargate bridge client (C11) | 🟢 client live | `TestStargateBridgeLive` — Arb Sepolia → Sepolia, exact quoted delivery |
 | Swap client (C12) | 🟢 client (fork) | `TestSwapForkArbitrumOne` — quote-exact swaps, both router shapes |
@@ -143,7 +143,14 @@ cd tools && go run ./cmd/run-test -a ../config/coston/deployed-addresses.json -c
 2. **C11-real:** Stargate Flare → Arbitrum One dust into the reserve (client proven; only pool addresses change).
 3. **C12-real:** SparkDEX swap leg with dust (fill in Flare router/quoter addresses).
 4. **Assembly:** full deposit path (Flare → HL) and withdraw path (HL → Flare) with dust, then the on-chain path on Flare mainnet, then cap ramp.
-5. **C9 (blocked):** PMW/Shamir custody + multi-machine consistency, when PMW is available.
+5. **C9 (unblocked 2026-07-08, integration pending):** the TEE wallet machinery
+   (KeyGenerate / sign server / Shamir + direct backup-restore) is already
+   available to extension nodes and the wallet facets are deployed on Coston;
+   the sibling `e2e` repo has the full provisioning example
+   (`e2e/cmd/wallet/contract-flow.md`). Remaining work is on our side: a
+   `Signer` abstraction (seed vs tee-wallet), native HL action signing through
+   `POST /sign/{walletID}/{keyID}`, an arb-tx signer callback, and the per-user
+   `addKey` provisioning flow. See the plan's Task 2.4 for the full design.
 6. **C2 (blocked):** `batchedDepositWithPermit` — reopen if HL ever deploys it.
 
 ## Known caveats / notes
