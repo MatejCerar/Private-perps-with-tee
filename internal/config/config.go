@@ -64,6 +64,19 @@ var (
 // deposit + withdraw3). Defaults to "treasury" for backward compatibility.
 var FundingMode = "treasury"
 
+// KeyMode selects HL account key custody: "seed" (per-user keys derived from
+// HL_MASTER_SEED, in-process) or "tee-wallet" (keys sealed in the TEE, reached
+// over the sign server — PMW custody, C9). Defaults to "seed".
+var KeyMode = "seed"
+
+// SignURL is the tee-node extension sign server (localhost, SIGN_PORT) used in
+// tee-wallet mode for /sign and /key-info.
+var SignURL = "http://127.0.0.1:7701"
+
+// WalletRegistryPath is the JSON file mapping users to their provisioned TEE
+// wallet (walletID, keyID), written by tools/cmd/provision-wallet.
+var WalletRegistryPath = "./config/wallet-registry.json"
+
 // LoadArbConfig reads Arbitrum-side settings for the bridge funding path.
 // Optional: the legacy treasury/spotSend deposit path does not use these.
 // ARB_RESERVE_KEY defaults to HL_TREASURY_KEY so the faucet-funded treasury can
@@ -83,6 +96,15 @@ func LoadArbConfig() {
 	}
 	if v := os.Getenv("HL_FUNDING_MODE"); v != "" {
 		FundingMode = v
+	}
+	if v := os.Getenv("HL_KEY_MODE"); v != "" {
+		KeyMode = v
+	}
+	if v := os.Getenv("HL_SIGN_URL"); v != "" {
+		SignURL = v
+	}
+	if v := os.Getenv("HL_WALLET_REGISTRY"); v != "" {
+		WalletRegistryPath = v
 	}
 	if v := os.Getenv("HL_MIN_DEPOSIT_USD"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {

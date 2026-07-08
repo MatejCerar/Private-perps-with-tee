@@ -42,6 +42,11 @@ type Extension struct {
 	// the sign server (C9/PMW). Selected by HL_KEY_MODE.
 	keyer keys.Keyer
 
+	// signerFactory is non-nil in tee-wallet mode: accountFor builds HL accounts
+	// whose actions are signed via the keyer (no raw key), instead of the
+	// seed-key factory.
+	signerFactory hl.SignerFactory
+
 	fundingMode string // "treasury" | "bridge"
 
 	// treasury-mode funding (legacy spotSend from a shared HL treasury)
@@ -97,6 +102,29 @@ func New(extensionPort, signPort int) *Extension {
 	}
 	factory := hl.NewRealFactory(config.HyperliquidURL)
 
+	// Tee-wallet custody (C9/PMW): keys live in the TEE, reached over the sign
+	// server; a file registry (written by tools/cmd/provision-wallet) maps users
+	// to their provisioned wallet. teeWallet stays nil in seed mode.
+	var teeKeyer keys.Keyer
+	var teeFactory hl.SignerFactory
+	if config.KeyMode == "tee-wallet" {
+		reg, err := keys.LoadFileRegistry(config.WalletRegistryPath)
+		if err != nil {
+			panic(fmt.Sprintf("wallet registry: %v", err))
+		}
+		teeKeyer = keys.NewTeeWalletKeyer(config.SignURL, reg)
+		teeFactory = hl.NewTeeWalletFactory(config.HyperliquidURL)
+		logger.Infof("HL key mode: tee-wallet (sign server %s, registry %s)", config.SignURL, config.WalletRegistryPath)
+	}
+
+	apply := func(e *Extension) *Extension {
+		if teeFactory != nil {
+			e.keyer = teeKeyer
+			e.signerFactory = teeFactory
+		}
+		return e
+	}
+
 	if config.FundingMode == "bridge" {
 		ac, err := arb.New(context.Background(), config.ArbitrumRPCURL)
 		if err != nil {
@@ -106,8 +134,8 @@ func New(extensionPort, signPort int) *Extension {
 		if err != nil {
 			panic(fmt.Sprintf("reserve key: %v", err))
 		}
-		e := NewWithBridge(extensionPort, signPort, factory, seed, ac, reserveKey,
-			common.HexToAddress(config.ArbUSDCAddress), common.HexToAddress(config.HLBridge2Address))
+		e := apply(NewWithBridge(extensionPort, signPort, factory, seed, ac, reserveKey,
+			common.HexToAddress(config.ArbUSDCAddress), common.HexToAddress(config.HLBridge2Address)))
 		e.startReconciler()
 		return e
 	}
@@ -201,6 +229,8 @@ func (e *Extension) ensureUnified(ctx context.Context, user common.Address, acct
 }
 
 // accountFor returns the cached (or newly derived) HL account for a Flare user.
+// In tee-wallet mode it builds a signer-backed account (keys stay in the TEE);
+// in seed mode it derives the key and builds a go-hyperliquid-backed account.
 func (e *Extension) accountFor(user common.Address) (hl.Account, error) {
 	e.mu.RLock()
 	a, ok := e.accounts[user]
@@ -208,13 +238,22 @@ func (e *Extension) accountFor(user common.Address) (hl.Account, error) {
 	if ok {
 		return a, nil
 	}
-	var priv *ecdsa.PrivateKey
-	priv, err := keys.DeriveUserKey(e.masterSeed, user)
-	if err != nil {
-		return nil, err
+
+	var acct hl.Account
+	if e.signerFactory != nil {
+		signer, err := e.keyer.UserSigner(user)
+		if err != nil {
+			return nil, fmt.Errorf("resolving tee-wallet signer: %w", err)
+		}
+		acct = e.signerFactory.AccountForSigner(signer)
+	} else {
+		priv, err := keys.DeriveUserKey(e.masterSeed, user)
+		if err != nil {
+			return nil, err
+		}
+		addr := crypto.PubkeyToAddress(priv.PublicKey).Hex()
+		acct = e.factory.Account(priv, addr)
 	}
-	addr := crypto.PubkeyToAddress(priv.PublicKey).Hex()
-	acct := e.factory.Account(priv, addr)
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
