@@ -160,12 +160,12 @@ func TestArbHLLoop(t *testing.T) {
 			t.Fatalf("user ETH balance: %v", err)
 		}
 		if uEth.Cmp(big.NewInt(minUserGasWei)) < 0 {
-			if _, err := client.SendETH(ctx, reserveKey, userAddr, big.NewInt(userGasWei)); err != nil {
+			if _, err := client.SendETH(ctx, keys.NewRawSigner(reserveKey), userAddr, big.NewInt(userGasWei)); err != nil {
 				t.Fatalf("fund user gas: %v", err)
 			}
 			t.Logf("sent 0.001 ETH gas to user")
 		}
-		if _, err := client.TransferUSDC(ctx, reserveKey, usdc, userAddr, arb.USDToUnits(depositUSD)); err != nil {
+		if _, err := client.TransferUSDC(ctx, keys.NewRawSigner(reserveKey), usdc, userAddr, arb.USDToUnits(depositUSD)); err != nil {
 			t.Fatalf("fund user USDC: %v", err)
 		}
 		got, err := client.WaitForUSDCBalance(ctx, usdc, userAddr, arb.USDToUnits(depositUSD), 5*time.Second, 2*time.Minute)
@@ -184,7 +184,7 @@ func TestArbHLLoop(t *testing.T) {
 			t.Fatalf("read user HL balance: %v", err)
 		}
 		t.Logf("user HL total USDC before deposit: %.2f", before)
-		if _, err := client.DepositToBridge(ctx, userKey, usdc, bridge, arb.USDToUnits(depositUSD)); err != nil {
+		if _, err := client.DepositToBridge(ctx, keys.NewRawSigner(userKey), usdc, bridge, arb.USDToUnits(depositUSD)); err != nil {
 			t.Fatalf("deposit to bridge: %v", err)
 		}
 		t.Logf("submitted Bridge2 deposit of %.2f USDC; polling HL for credit", depositUSD)

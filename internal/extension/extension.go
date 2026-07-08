@@ -37,6 +37,11 @@ type Extension struct {
 	masterSeed []byte
 	led        *ledger.Ledger
 
+	// keyer resolves each user's signing identity: SeedKeyer derives it from
+	// masterSeed (today), TeeWalletKeyer resolves it to a TEE-custodied key over
+	// the sign server (C9/PMW). Selected by HL_KEY_MODE.
+	keyer keys.Keyer
+
 	fundingMode string // "treasury" | "bridge"
 
 	// treasury-mode funding (legacy spotSend from a shared HL treasury)
@@ -44,12 +49,13 @@ type Extension struct {
 	treasuryAddr string
 
 	// bridge-mode funding (real Arbitrum Bridge2 deposit + withdraw3)
-	arb         ArbClient
-	reserveKey  *ecdsa.PrivateKey
-	reserveAddr common.Address
-	usdcAddr    common.Address
-	bridgeAddr  common.Address
-	reserveHL   hl.Account // reserve's HL account, for auto-refilling Arbitrum USDC via withdraw3
+	arb           ArbClient
+	reserveKey    *ecdsa.PrivateKey
+	reserveSigner keys.Signer // reserve key as a Signer for Arbitrum txs
+	reserveAddr   common.Address
+	usdcAddr      common.Address
+	bridgeAddr    common.Address
+	reserveHL     hl.Account // reserve's HL account, for auto-refilling Arbitrum USDC via withdraw3
 
 	accounts map[common.Address]hl.Account // cache: flare addr -> HL account
 
@@ -66,13 +72,15 @@ type Extension struct {
 }
 
 // ArbClient is the Arbitrum-side surface the bridge funding path needs. Real
-// deployments use *arb.Client; tests can substitute a fake.
+// deployments use *arb.Client; tests can substitute a fake. Sending methods take
+// a keys.Signer so the sending key may be seed-derived (in-process) or
+// TEE-custodied (sign server) without changing this interface.
 type ArbClient interface {
 	USDCBalance(ctx context.Context, token, addr common.Address) (*big.Int, error)
 	ETHBalance(ctx context.Context, addr common.Address) (*big.Int, error)
-	TransferUSDC(ctx context.Context, from *ecdsa.PrivateKey, token, to common.Address, units *big.Int) (common.Hash, error)
-	SendETH(ctx context.Context, from *ecdsa.PrivateKey, to common.Address, wei *big.Int) (common.Hash, error)
-	DepositToBridge(ctx context.Context, from *ecdsa.PrivateKey, usdc, bridge common.Address, units *big.Int) (common.Hash, error)
+	TransferUSDC(ctx context.Context, from keys.Signer, token, to common.Address, units *big.Int) (common.Hash, error)
+	SendETH(ctx context.Context, from keys.Signer, to common.Address, wei *big.Int) (common.Hash, error)
+	DepositToBridge(ctx context.Context, from keys.Signer, usdc, bridge common.Address, units *big.Int) (common.Hash, error)
 	WaitForUSDCBalance(ctx context.Context, token, addr common.Address, min *big.Int, poll, timeout time.Duration) (*big.Int, error)
 }
 
@@ -139,6 +147,7 @@ func NewWithBridge(extensionPort, signPort int, f hl.Factory, seed []byte, ac Ar
 	e.fundingMode = "bridge"
 	e.arb = ac
 	e.reserveKey = reserveKey
+	e.reserveSigner = keys.NewRawSigner(reserveKey)
 	e.reserveAddr = crypto.PubkeyToAddress(reserveKey.PublicKey)
 	e.usdcAddr = usdc
 	e.bridgeAddr = bridge
@@ -151,6 +160,7 @@ func buildExtension(extensionPort, signPort int, f hl.Factory, seed []byte) *Ext
 		signPort:      signPort,
 		factory:       f,
 		masterSeed:    seed,
+		keyer:         keys.NewSeedKeyer(seed),
 		led:           ledger.New(),
 		accounts:      map[common.Address]hl.Account{},
 		reconcileStop: make(chan struct{}),

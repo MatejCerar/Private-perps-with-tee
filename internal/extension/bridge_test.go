@@ -3,7 +3,6 @@ package extension
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
 	"fmt"
 	"math/big"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"extension-scaffold/internal/arb"
 	"extension-scaffold/internal/config"
 	"extension-scaffold/internal/hl"
+	"extension-scaffold/internal/keys"
 	"extension-scaffold/pkg/types"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -76,39 +76,39 @@ func (f *fakeArb) ETHBalance(_ context.Context, addr common.Address) (*big.Int, 
 	return f.bal(f.eth, addr), nil
 }
 
-func (f *fakeArb) TransferUSDC(_ context.Context, from *ecdsa.PrivateKey, _ common.Address, to common.Address, units *big.Int) (common.Hash, error) {
+func (f *fakeArb) TransferUSDC(_ context.Context, from keys.Signer, _ common.Address, to common.Address, units *big.Int) (common.Hash, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.transferErr != nil {
 		return common.Hash{}, f.transferErr
 	}
-	fromAddr := crypto.PubkeyToAddress(from.PublicKey)
+	fromAddr := from.Address()
 	f.transfers = append(f.transfers, xferRec{fromAddr, to, new(big.Int).Set(units)})
 	f.usdc[fromAddr] = new(big.Int).Sub(f.bal(f.usdc, fromAddr), units)
 	f.usdc[to] = new(big.Int).Add(f.bal(f.usdc, to), units)
 	return common.Hash{0x01}, nil
 }
 
-func (f *fakeArb) SendETH(_ context.Context, from *ecdsa.PrivateKey, to common.Address, wei *big.Int) (common.Hash, error) {
+func (f *fakeArb) SendETH(_ context.Context, from keys.Signer, to common.Address, wei *big.Int) (common.Hash, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.sendETHErr != nil {
 		return common.Hash{}, f.sendETHErr
 	}
-	fromAddr := crypto.PubkeyToAddress(from.PublicKey)
+	fromAddr := from.Address()
 	f.sends = append(f.sends, xferRec{fromAddr, to, new(big.Int).Set(wei)})
 	f.eth[fromAddr] = new(big.Int).Sub(f.bal(f.eth, fromAddr), wei)
 	f.eth[to] = new(big.Int).Add(f.bal(f.eth, to), wei)
 	return common.Hash{0x02}, nil
 }
 
-func (f *fakeArb) DepositToBridge(_ context.Context, from *ecdsa.PrivateKey, _, _ common.Address, units *big.Int) (common.Hash, error) {
+func (f *fakeArb) DepositToBridge(_ context.Context, from keys.Signer, _, _ common.Address, units *big.Int) (common.Hash, error) {
 	f.mu.Lock()
 	if f.depositErr != nil {
 		f.mu.Unlock()
 		return common.Hash{}, f.depositErr
 	}
-	fromAddr := crypto.PubkeyToAddress(from.PublicKey)
+	fromAddr := from.Address()
 	f.deposits = append(f.deposits, xferRec{fromAddr, common.Address{}, new(big.Int).Set(units)})
 	f.usdc[fromAddr] = new(big.Int).Sub(f.bal(f.usdc, fromAddr), units)
 	hook := f.depositHook

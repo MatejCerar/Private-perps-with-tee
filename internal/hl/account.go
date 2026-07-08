@@ -14,6 +14,9 @@ import (
 	"strconv"
 	"time"
 
+	"extension-scaffold/internal/hl/hlsign"
+	"extension-scaffold/internal/keys"
+
 	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 	gohl "github.com/sonirico/go-hyperliquid"
 )
@@ -87,7 +90,12 @@ func (f *realFactory) Account(privKey *ecdsa.PrivateKey, accountAddr string) Acc
 	// end of the Tokens slice (info.go:111). We drop those malformed pairs.
 	spotMeta := sanitizedSpotMeta(f.baseURL)
 	ex := gohl.NewExchange(context.Background(), privKey, f.baseURL, nil, "", accountAddr, spotMeta, nil)
-	return &realAccount{ex: ex, addr: accountAddr, usdcToken: usdcTokenID(spotMeta), privKey: privKey, baseURL: f.baseURL}
+	// signer wraps the same key. In seed mode it is the derived key (identical
+	// signatures); a future tee-wallet factory injects a TeeWalletSigner so HL
+	// actions can be signed without the raw key (C9). go-hyperliquid's Exchange
+	// still needs the raw key for order signing until that path is reimplemented
+	// on top of hlsign.
+	return &realAccount{ex: ex, addr: accountAddr, usdcToken: usdcTokenID(spotMeta), privKey: privKey, signer: keys.NewRawSigner(privKey), baseURL: f.baseURL}
 }
 
 // usdcTokenID returns the spotSend token identifier for USDC ("USDC:<tokenId>"),
@@ -138,6 +146,7 @@ type realAccount struct {
 	addr      string
 	usdcToken string
 	privKey   *ecdsa.PrivateKey
+	signer    keys.Signer // signs HL actions; seed-derived today, TEE-custodied under C9
 	baseURL   string
 }
 
@@ -250,7 +259,10 @@ func (a *realAccount) SetAbstraction(ctx context.Context, mode string) error {
 		{Name: "abstraction", Type: "string"},
 		{Name: "nonce", Type: "uint64"},
 	}
-	sig, err := gohl.SignUserSignedAction(a.privKey, action, payloadTypes,
+	// Signed through the Signer (hlsign), so this action works with a
+	// TEE-custodied key as well as the seed-derived key — byte-identical to
+	// go-hyperliquid's own signing (verified in internal/hl/hlsign).
+	sig, err := hlsign.SignUserAction(a.signer, action, payloadTypes,
 		"HyperliquidTransaction:UserSetAbstraction", a.baseURL == gohl.MainnetAPIURL)
 	if err != nil {
 		return err

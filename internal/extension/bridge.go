@@ -10,10 +10,8 @@ import (
 	"extension-scaffold/internal/arb"
 	"extension-scaffold/internal/config"
 	"extension-scaffold/internal/hl"
-	"extension-scaffold/internal/keys"
 	"extension-scaffold/pkg/types"
 
-	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/flare-foundation/go-flare-common/pkg/tee/instruction"
 	teetypes "github.com/flare-foundation/tee-node/pkg/types"
 )
@@ -71,11 +69,11 @@ func (e *Extension) processDepositBridge(a teetypes.Action, df *instruction.Data
 	mu.Lock()
 	defer mu.Unlock()
 
-	priv, err := keys.DeriveUserKey(e.masterSeed, user)
+	userSigner, err := e.keyer.UserSigner(user)
 	if err != nil {
-		return buildResult(a, df, nil, 0, fmt.Errorf("deriving key: %w", err))
+		return buildResult(a, df, nil, 0, fmt.Errorf("resolving user signer: %w", err))
 	}
-	userAddr := crypto.PubkeyToAddress(priv.PublicKey)
+	userAddr := userSigner.Address()
 	acct, err := e.accountFor(user)
 	if err != nil {
 		return buildResult(a, df, nil, 0, fmt.Errorf("deriving account: %w", err))
@@ -97,14 +95,14 @@ func (e *Extension) processDepositBridge(a teetypes.Action, df *instruction.Data
 		return buildResult(a, df, nil, 0, fmt.Errorf("reading user gas: %w", err))
 	}
 	if uEth.Cmp(minUserGasWei) < 0 {
-		if _, err := e.arb.SendETH(ctx, e.reserveKey, userAddr, userGasWei); err != nil {
+		if _, err := e.arb.SendETH(ctx, e.reserveSigner, userAddr, userGasWei); err != nil {
 			return buildResult(a, df, nil, 0, fmt.Errorf("funding user gas: %w", err))
 		}
 	}
 
 	// 3. Reserve positions the deposit USDC at the user's own Arbitrum address
 	//    (Bridge2 credits the sender, so it must originate from the user).
-	if _, err := e.arb.TransferUSDC(ctx, e.reserveKey, e.usdcAddr, userAddr, units); err != nil {
+	if _, err := e.arb.TransferUSDC(ctx, e.reserveSigner, e.usdcAddr, userAddr, units); err != nil {
 		return buildResult(a, df, nil, 0, fmt.Errorf("funding user from reserve: %w", err))
 	}
 	if _, err := e.arb.WaitForUSDCBalance(ctx, e.usdcAddr, userAddr, units, 5*time.Second, reserveFundTimeout); err != nil {
@@ -116,7 +114,7 @@ func (e *Extension) processDepositBridge(a teetypes.Action, df *instruction.Data
 	if err != nil {
 		return buildResult(a, df, nil, 0, fmt.Errorf("reading HL balance: %w", err))
 	}
-	if _, err := e.arb.DepositToBridge(ctx, priv, e.usdcAddr, e.bridgeAddr, units); err != nil {
+	if _, err := e.arb.DepositToBridge(ctx, userSigner, e.usdcAddr, e.bridgeAddr, units); err != nil {
 		return buildResult(a, df, nil, 0, fmt.Errorf("bridge deposit: %w", err))
 	}
 	if err := waitForHLCredit(ctx, acct, before+req.UsdAmount-depositCreditTolerance, hlCreditTimeout); err != nil {

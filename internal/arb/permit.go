@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 
+	"extension-scaffold/internal/keys"
+
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
@@ -194,5 +196,7 @@ func (c *Client) BatchedDepositWithPermit(ctx context.Context, relayerKey *ecdsa
 	if err != nil {
 		return common.Hash{}, fmt.Errorf("pack batched deposit: %w", err)
 	}
-	return c.sendTx(ctx, relayerKey, bridge, big.NewInt(0), data)
+	// C2 is shelved (batchedDepositWithPermit is not deployed); the relayer is a
+	// raw key here, wrapped as a Signer for sendTx's uniform interface.
+	return c.sendTx(ctx, keys.NewRawSigner(relayerKey), bridge, big.NewInt(0), data)
 }

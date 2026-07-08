@@ -9,7 +9,6 @@ package arb
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"fmt"
 	"math"
 	"math/big"
@@ -17,12 +16,13 @@ import (
 	"sync"
 	"time"
 
+	"extension-scaffold/internal/keys"
+
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 )
 
@@ -116,9 +116,11 @@ func (c *Client) ETHBalance(ctx context.Context, addr common.Address) (*big.Int,
 	return c.eth.BalanceAt(ctx, addr, nil)
 }
 
-// TransferUSDC sends `units` of the token from `from` to `to` and waits for the
-// receipt. Returns the mined transaction hash.
-func (c *Client) TransferUSDC(ctx context.Context, from *ecdsa.PrivateKey, token, to common.Address, units *big.Int) (common.Hash, error) {
+// TransferUSDC sends `units` of the token from the signer's address to `to` and
+// waits for the receipt. Returns the mined transaction hash. `from` is a
+// keys.Signer so the sending key may live in-process (seed) or inside the TEE
+// (tee-wallet) — the client never needs the raw key.
+func (c *Client) TransferUSDC(ctx context.Context, from keys.Signer, token, to common.Address, units *big.Int) (common.Hash, error) {
 	data, err := c.erc20.Pack("transfer", to, units)
 	if err != nil {
 		return common.Hash{}, err
@@ -129,26 +131,28 @@ func (c *Client) TransferUSDC(ctx context.Context, from *ecdsa.PrivateKey, token
 // DepositToBridge deposits `units` of USDC to the Hyperliquid Bridge2 contract.
 // A Bridge2 deposit is a plain ERC20 transfer to the bridge address; HL
 // validators credit the sending address on the L1. USDC must therefore already
-// sit at `from`'s address, and the credited HL account is `from`'s address.
-func (c *Client) DepositToBridge(ctx context.Context, from *ecdsa.PrivateKey, usdc, bridge common.Address, units *big.Int) (common.Hash, error) {
+// sit at the signer's address, and the credited HL account is that address.
+func (c *Client) DepositToBridge(ctx context.Context, from keys.Signer, usdc, bridge common.Address, units *big.Int) (common.Hash, error) {
 	return c.TransferUSDC(ctx, from, usdc, bridge, units)
 }
 
-// SendETH transfers `wei` of native ETH from `from` to `to` (for gas funding)
-// and waits for the receipt.
-func (c *Client) SendETH(ctx context.Context, from *ecdsa.PrivateKey, to common.Address, wei *big.Int) (common.Hash, error) {
+// SendETH transfers `wei` of native ETH from the signer's address to `to` (for
+// gas funding) and waits for the receipt.
+func (c *Client) SendETH(ctx context.Context, from keys.Signer, to common.Address, wei *big.Int) (common.Hash, error) {
 	return c.sendTx(ctx, from, to, wei, nil)
 }
 
 // sendTx builds, signs, sends, and waits for a legacy transaction. A nil/empty
 // `data` with a positive `value` is a plain ETH transfer; otherwise it is a
 // contract call. It holds c.sendMu for the whole sequence so concurrent calls
-// sharing the same sender key (the reserve) do not race on the nonce.
-func (c *Client) sendTx(ctx context.Context, from *ecdsa.PrivateKey, to common.Address, value *big.Int, data []byte) (common.Hash, error) {
+// sharing the same sender key (the reserve) do not race on the nonce. Signing
+// goes through keys.SignLegacyTx, which reconstructs the EIP-155 preimage and
+// verifies it against go-ethereum's own digest before delegating to the signer.
+func (c *Client) sendTx(ctx context.Context, from keys.Signer, to common.Address, value *big.Int, data []byte) (common.Hash, error) {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
 
-	fromAddr := crypto.PubkeyToAddress(from.PublicKey)
+	fromAddr := from.Address()
 
 	nonce, err := c.eth.PendingNonceAt(ctx, fromAddr)
 	if err != nil {
@@ -180,7 +184,7 @@ func (c *Client) sendTx(ctx context.Context, from *ecdsa.PrivateKey, to common.A
 		GasPrice: gasPrice,
 		Data:     data,
 	})
-	signed, err := types.SignTx(tx, types.LatestSignerForChainID(c.chainID), from)
+	signed, err := keys.SignLegacyTx(tx, c.chainID, from)
 	if err != nil {
 		return common.Hash{}, fmt.Errorf("sign tx: %w", err)
 	}
