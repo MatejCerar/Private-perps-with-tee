@@ -78,4 +78,9 @@ require (
 	howett.net/plist v1.0.1 // indirect
 )
 
-replace github.com/flare-foundation/tee-node => ../../tee-node
+// tee-node via a git worktree pinned at 31fc839 (2026-06-19), the commit that
+// pairs with this module's go-flare-common (June) pin. The sibling ../../tee-node
+// checkout is detached at 5419e8b (2026-05-13), whose old signing scheme the
+// June-era tee-proxy rejects ("signature check fail" at proxy boot). Create with:
+//   git -C ../../tee-node worktree add ../tee-node-hype 31fc839ae6d2
+replace github.com/flare-foundation/tee-node => ../../tee-node-hype

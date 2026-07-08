@@ -70,3 +70,21 @@ func TestSpotUSDCZeroWhenAbsent(t *testing.T) {
 		t.Fatalf("got %v", bal)
 	}
 }
+
+func TestMid(t *testing.T) {
+	c := testClient(t, `{"ETH":"1759.05","PURR/USDC":"4.60235"}`)
+	mid, err := c.Mid("PURR/USDC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mid != 4.60235 {
+		t.Fatalf("got %v", mid)
+	}
+}
+
+func TestMidUnknownCoin(t *testing.T) {
+	c := testClient(t, `{"ETH":"1759.05"}`)
+	if _, err := c.Mid("NOPE/USDC"); err == nil {
+		t.Fatal("expected error for unknown coin")
+	}
+}

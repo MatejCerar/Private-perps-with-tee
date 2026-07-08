@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"math"
 	"os"
 	"strings"
 	"time"
@@ -146,14 +147,25 @@ func main() {
 	}
 
 	// --- Step 3: SPOT limit order --------------------------------------------
+	// Price relative to the live mid: HL rejects orders >80% away from the
+	// reference price, so a hardcoded px rots as the market moves. Half the mid
+	// always rests (never fills) and stays within the cap. PURR has szDecimals=0,
+	// so the size must be a whole number; ~$12 notional clears the $10 minimum.
 	logger.Infof("Sending SPOT limit order...")
+	spotMid, err := hl.Mid("PURR/USDC")
+	if err != nil {
+		fccutils.FatalWithCause(errors.Errorf("fetching PURR/USDC mid: %s", err))
+	}
+	spotPx := roundSigFigs(spotMid*0.5, 4)
+	spotSize := math.Ceil(12.0 / spotPx)
+	logger.Infof("PURR/USDC mid=%.5f -> limit px=%v size=%v", spotMid, spotPx, spotSize)
 	spotPayload, _ := json.Marshal(map[string]any{
 		"market":    "spot",
 		"coin":      "PURR/USDC",
 		"isBuy":     true,
 		"orderType": "limit",
-		"size":      20,
-		"limitPx":   0.5,
+		"size":      spotSize,
+		"limitPx":   spotPx,
 	})
 	spotID, _, err := instrutils.SendPlaceOrder(testSupport, instructionSenderAddress, spotPayload)
 	if err != nil {
@@ -203,4 +215,14 @@ func envOr(k, def string) string {
 		return v
 	}
 	return def
+}
+
+// roundSigFigs rounds x to n significant figures (HL rejects prices with more
+// than 5; 4 leaves headroom).
+func roundSigFigs(x float64, n int) float64 {
+	if x == 0 {
+		return 0
+	}
+	mag := math.Pow(10, float64(n)-math.Ceil(math.Log10(math.Abs(x))))
+	return math.Round(x*mag) / mag
 }

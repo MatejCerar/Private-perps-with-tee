@@ -30,9 +30,12 @@ RUN \
   : "Clean up for improving reproducibility (optional)" && \
   rm -rf /var/log/* /var/cache/ldconfig/aux-cache
 
-# bring in both modules; tee-node sits next to hype-accounts so the replace directive resolves
+# bring in both modules; go.mod's replace points at tee-node-hype, a git worktree
+# of tee-node pinned at 31fc839 (2026-06-19) — the commit that pairs with this
+# module's go-flare-common pin and the June-era tee-proxy signing scheme. Create
+# it once with: git -C tee-node worktree add ../tee-node-hype 31fc839ae6d2
 # explicit chmod/chown on COPY so file metadata does not depend on host umask or ownership
-COPY --chmod=644 --chown=0:0 tee-node/ ./tee-node/
+COPY --chmod=644 --chown=0:0 tee-node-hype/ ./tee-node-hype/
 COPY --chmod=644 --chown=0:0 extension-examples/hype-accounts/ ./extension-examples/hype-accounts/
 
 WORKDIR /build/extension-examples/hype-accounts

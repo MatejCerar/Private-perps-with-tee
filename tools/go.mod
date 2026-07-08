@@ -109,6 +109,17 @@ require (
 
 replace (
 	extension-scaffold => ../
-	github.com/flare-foundation/tee-node => ../../../tee-node
-	github.com/flare-foundation/tee-proxy => ../../../tee-proxy
+	// tee-node pinned via a git worktree at the commit this module's require
+	// line targets (31fc839, 2026-06-19). The sibling ../../../tee-node checkout
+	// is detached at an older commit (5419e8b, 2026-05-13) whose internal
+	// packages don't compile against the newer go-flare-common this module (and
+	// tools/pkg/fccutils' use of GovernanceHash/TeeInfo.ChainID) requires.
+	// Create it with:
+	//   git -C ../../tee-node worktree add ../tee-node-hype 31fc839ae6d2
+	github.com/flare-foundation/tee-node => ../../../tee-node-hype
+	// tee-proxy: same story — the sibling checkout is detached at 213c201
+	// (2026-05-14, April go-flare-common); develop pairs with the June one.
+	// Create with:
+	//   git -C ../../tee-proxy worktree add ../tee-proxy-hype develop
+	github.com/flare-foundation/tee-proxy => ../../../tee-proxy-hype
 )

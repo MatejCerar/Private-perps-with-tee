@@ -88,3 +88,19 @@ func (c *Client) SpotUSDC(user string) (float64, error) {
 	}
 	return 0, nil
 }
+
+// Mid returns the current mid price for a coin or spot pair (e.g. "ETH",
+// "PURR/USDC") from allMids. The e2e driver prices resting limit orders
+// relative to the live mid: HL rejects orders more than 80% away from the
+// reference price, so hardcoded prices rot as the market moves.
+func (c *Client) Mid(coin string) (float64, error) {
+	var mids map[string]string
+	if err := c.post(map[string]any{"type": "allMids"}, &mids); err != nil {
+		return 0, err
+	}
+	v, ok := mids[coin]
+	if !ok {
+		return 0, fmt.Errorf("no mid for %q", coin)
+	}
+	return strconv.ParseFloat(v, 64)
+}

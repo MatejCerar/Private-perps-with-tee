@@ -2,6 +2,10 @@
 
 A working Hello World example for building Flare Confidential Compute (FCC) extensions. This repository demonstrates a complete, runnable extension with on-chain contracts, deployment tooling, and registration scripts — everything you need to understand how extensions work on the Flare TEE infrastructure.
 
+> **Hyperliquid funding path status:** see [docs/STATUS.md](docs/STATUS.md) for
+> where every component of the Flare → Arbitrum → Hyperliquid path stands, what
+> was proven live, and how to re-run each proof.
+
 ## Repository Structure
 
 ```
