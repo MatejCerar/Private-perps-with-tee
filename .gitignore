@@ -32,3 +32,5 @@ notes/
 DEPLOYMENT.md
 
 config/**/*.log
+# Per-deployment wallet registry (written by tools/cmd/provision-wallet)
+config/wallet-registry.json

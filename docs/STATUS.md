@@ -21,7 +21,7 @@ live**, most of them today:
 | Ledger + reconciliation (C6) | 🟢 live | `TestBridgeHandlersLive/reconcile` (converge + drift-heal) |
 | Multi-user / concurrency (C7) | 🟢 live | `TestBridgeMultiUserLive` — 3 users parallel deposit+drain |
 | On-chain instruction path (C8) | 🟢 live (**Coston**) | `run-test`: on-chain DEPOSIT→PERP→SPOT→WITHDRAW, verified on HL |
-| PMW/Shamir custody (C9) | 🟡 signing foundation done | Signer abstraction (seed + tee-wallet) + HL/arb signing via Signer, all byte-identical to the raw-key path; provisioning + order-placement plumbing remain (Task 2.4) |
+| PMW/Shamir custody (C9) | 🟢 provisioned + signing verified live (**Coston**) | Full tee-wallet path built, wired (HL_KEY_MODE), and **provisioned live**: `provision-wallet` created project→wallet→2-of-3 admins→key on-chain; the enclave generated the key and its existence proof was confirmed on-chain. The enclave sign server then signed a live message whose signature **recovers to the derived HL address** — TEE-custodied key, never exported. Signing is byte-identical to raw-key/go-hyperliquid (unit-proven). Remaining: drive one HL order through the extension in tee-wallet mode (needs the HL address funded — no crypto uncertainty left). |
 | Arb One ↔ HL mainnet loop (C10) | ⏳ mainnet dust | same code as C1, mainnet config |
 | Stargate bridge client (C11) | 🟢 client live | `TestStargateBridgeLive` — Arb Sepolia → Sepolia, exact quoted delivery |
 | Swap client (C12) | 🟢 client (fork) | `TestSwapForkArbitrumOne` — quote-exact swaps, both router shapes |
@@ -143,14 +143,22 @@ cd tools && go run ./cmd/run-test -a ../config/coston/deployed-addresses.json -c
 2. **C11-real:** Stargate Flare → Arbitrum One dust into the reserve (client proven; only pool addresses change).
 3. **C12-real:** SparkDEX swap leg with dust (fill in Flare router/quoter addresses).
 4. **Assembly:** full deposit path (Flare → HL) and withdraw path (HL → Flare) with dust, then the on-chain path on Flare mainnet, then cap ramp.
-5. **C9 (unblocked 2026-07-08, integration pending):** the TEE wallet machinery
-   (KeyGenerate / sign server / Shamir + direct backup-restore) is already
-   available to extension nodes and the wallet facets are deployed on Coston;
-   the sibling `e2e` repo has the full provisioning example
-   (`e2e/cmd/wallet/contract-flow.md`). Remaining work is on our side: a
-   `Signer` abstraction (seed vs tee-wallet), native HL action signing through
-   `POST /sign/{walletID}/{keyID}`, an arb-tx signer callback, and the per-user
-   `addKey` provisioning flow. See the plan's Task 2.4 for the full design.
+5. **C9 (provisioned + signing verified live 2026-07-08):** the entire
+   tee-wallet custody path is built, tested, committed, and **run live on
+   Coston**. `tools/cmd/provision-wallet` ran the full 8-step lifecycle
+   (createProject → createWallet → set+confirm 2-of-3 admins → close → multisig
+   threshold → addKey → confirmKey → enableWallet), gas-funding the fresh admins
+   from the deployer. The enclave generated key 0 for wallet
+   `0x98b19bb2…c092b95c`; its existence proof was fetched from the proxy and
+   confirmed on-chain. A live call to the enclave sign server (`/key-info` +
+   `/sign`) returned a public key and signature that both **recover to the
+   derived HL address `0x2CDA4363…C10E72`** — proving the TEE-custodied key
+   (never exported) signs correctly, over the exact `crypto.Sign(keccak256(msg))`
+   rule the HL action builder feeds (byte-identical to go-hyperliquid, unit-proven).
+   The registry (`config/wallet-registry.json`, gitignored) maps the user to the
+   wallet. Remaining: fund the HL address and drive one order through the
+   extension with `HL_KEY_MODE=tee-wallet` — a config/funding step with no
+   cryptographic uncertainty left.
 6. **C2 (blocked):** `batchedDepositWithPermit` — reopen if HL ever deploys it.
 
 ## Known caveats / notes
