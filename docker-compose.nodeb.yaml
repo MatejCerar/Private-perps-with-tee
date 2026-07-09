@@ -1,0 +1,75 @@
+# Second TEE node (node B) for C9 multi-machine key replication.
+#
+# A standalone stack — its own redis + proxy + tee container — joined to node A's
+# existing Coston network (extension-scaffold-coston). Reuses node A's already-built
+# extension image (hype-accounts-extension-tee), so no rebuild. Node B's tee-node
+# generates its OWN identity key on boot, so it registers on-chain as a distinct
+# teeID; everything else (EXTENSION_ID, chain, governance, HL secrets) matches node A.
+#
+# Run in its own compose project so service/container names don't collide with A:
+#   docker compose -p hype-nodeb -f docker-compose.nodeb.yaml up -d
+#   docker compose -p hype-nodeb -f docker-compose.nodeb.yaml down
+#
+# Node B endpoints on the host: proxy external :6684 (internal :6683),
+# redis :6383, enclave sign server :7711.
+services:
+  redis-b:
+    image: redis:7-alpine
+    command: redis-server --save "" --appendonly no
+    ports:
+      - "127.0.0.1:6383:6379"
+    tmpfs:
+      - /data
+
+  ext-proxy-b:
+    image: ${REGISTRY:-local}/tee-proxy
+    volumes:
+      - ./config/proxy/extension_proxy.coston.nodeb.docker.toml:/app/config/config.toml:ro
+    environment:
+      # Distinct proxy identity from node A (well-known Hardhat #1 test key; the
+      # proxy key only signs responses and needs no chain funds). Override via
+      # PROXY_PRIVATE_KEY_B in .env if desired.
+      - PROXY_PRIVATE_KEY=${PROXY_PRIVATE_KEY_B:-59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d}
+      - DIRECT_API_KEY=${DIRECT_API_KEY:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:6683:6663"
+      - "127.0.0.1:6684:6664"
+    depends_on:
+      - redis-b
+
+  extension-tee-b:
+    image: hype-accounts-extension-tee
+    env_file:
+      - path: ./config/extension.env
+        required: false
+    environment:
+      - MODE=${MODE:-1}
+      - CHAIN_ID=${CHAIN_ID:-16}
+      - CHAIN_URL=${CHAIN_URL:-https://coston-api.flare.network/ext/C/rpc}
+      # Pinned to node A's actual running values (0xDa50…, the deployer/owner).
+      # NOTE: the repo .env has a duplicate placeholder INITIAL_OWNER="..." that
+      # wins in compose var-substitution, so we set these literally here to match A.
+      - INITIAL_OWNER=0xDa50A19aF65655785ab1F4c6a5b0592AFC497C88
+      - GOVERNANCE_SIGNERS=0xDa50A19aF65655785ab1F4c6a5b0592AFC497C88
+      - GOVERNANCE_THRESHOLD=1
+      - PROXY_URL=http://ext-proxy-b:6663
+      - CONFIG_PORT=5501
+      - SIGN_PORT=7701
+      - EXTENSION_PORT=7702
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - HYPERLIQUID_URL=${HYPERLIQUID_URL:-https://api.hyperliquid-testnet.xyz}
+      - HL_MASTER_SEED=${HL_MASTER_SEED}
+      - HL_TREASURY_KEY=${HL_TREASURY_KEY}
+      - HL_MAX_DEPOSIT_USD=${HL_MAX_DEPOSIT_USD:-1000}
+      - HL_MAX_TOTAL_DEPOSIT_USD=${HL_MAX_TOTAL_DEPOSIT_USD:-5000}
+    ports:
+      - "127.0.0.1:7711:7701"
+    depends_on:
+      - ext-proxy-b
+
+networks:
+  default:
+    name: ${COMPOSE_NETWORK:-extension-scaffold-coston}
+    external: true

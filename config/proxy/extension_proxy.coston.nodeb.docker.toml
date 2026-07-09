@@ -1,0 +1,47 @@
+# Coston (chain_id=16) proxy config for the SECOND TEE node (node B) — docker mode.
+#
+# Mounted by docker-compose.nodeb.yaml into ext-proxy-b at /app/config/config.toml.
+# Identical to extension_proxy.coston.docker.toml except redis_port points at this
+# node's own redis (redis-b) so node B's wallet/backup/queue state is isolated from
+# node A. Shares the same read-only Coston indexer DB and the same on-chain
+# addresses. [direct] is enabled (needed for the machine-to-machine key replication
+# that node B exists to validate — C9 multi-machine).
+redis_port = "redis-b:6379"
+private_key_variable = "PROXY_PRIVATE_KEY"
+initial_signing_policy_offset = 0
+signing_policy_fetch_interval = "20s"
+
+chain_id = 16
+
+[db]
+host = "35.241.249.150"
+port = 3306
+database = "indexer"
+username = "indexer-reader"
+password = "sMgYpa2Eh2u3cRZg"
+log_queries = false
+
+
+[addresses]
+flare_systems_manager = "0x85680Dd93755Fe5d0789773fd0896cEE51F9e358"
+relay = "0x051f214D346Cfd97B107BECb87E2B35D1b4287E9"
+voter_registry = "0x42F4526BFC6f892DB515a832a52eFc9edFADf6c0"
+
+
+[ports]
+internal = "6663"
+external = "6664"
+
+
+[info_timing]
+cycle_internal = "10s"
+cycle_queue_response_wait = "2s"
+
+
+[voting]
+proposal_expiration = "12s"
+max_pending_request = 10000
+
+[direct]
+enable = true
+api_key_variable = "DIRECT_API_KEY"
