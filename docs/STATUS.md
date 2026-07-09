@@ -21,7 +21,7 @@ live**, most of them today:
 | Ledger + reconciliation (C6) | 🟢 live | `TestBridgeHandlersLive/reconcile` (converge + drift-heal) |
 | Multi-user / concurrency (C7) | 🟢 live | `TestBridgeMultiUserLive` — 3 users parallel deposit+drain |
 | On-chain instruction path (C8) | 🟢 live (**Coston**) | `run-test`: on-chain DEPOSIT→PERP→SPOT→WITHDRAW, verified on HL |
-| PMW/Shamir custody (C9) | 🟢 provisioned + signing verified live (**Coston**) | Full tee-wallet path built, wired (HL_KEY_MODE), and **provisioned live**: `provision-wallet` created project→wallet→2-of-3 admins→key on-chain; the enclave generated the key and its existence proof was confirmed on-chain. The enclave sign server then signed a live message whose signature **recovers to the derived HL address** — TEE-custodied key, never exported. Signing is byte-identical to raw-key/go-hyperliquid (unit-proven). Remaining: drive one HL order through the extension in tee-wallet mode (needs the HL address funded — no crypto uncertainty left). |
+| PMW/Shamir custody (C9) | 🟢 closed — tee-wallet order accepted live (**Coston + HL**) | Full tee-wallet path built, wired (HL_KEY_MODE), **provisioned live** (`provision-wallet`: project→wallet→2-of-3 admins→enclave key→confirmed on-chain), and **exercised end-to-end**: `TestTeeWalletOrderLive` funded the provisioned account and had the **TEE-sealed key sign a real HL SetAbstraction + perp limit order + cancel — all accepted by HL** (oid 56216671517 rested then cancelled). Key never leaves the enclave; signing byte-identical to go-hyperliquid. Only multi-machine key replication remains (separate track). |
 | Arb One ↔ HL mainnet loop (C10) | ⏳ mainnet dust | same code as C1, mainnet config |
 | Stargate bridge client (C11) | 🟢 client live | `TestStargateBridgeLive` — Arb Sepolia → Sepolia, exact quoted delivery |
 | Swap client (C12) | 🟢 client (fork) | `TestSwapForkArbitrumOne` — quote-exact swaps, both router shapes |
@@ -143,22 +143,24 @@ cd tools && go run ./cmd/run-test -a ../config/coston/deployed-addresses.json -c
 2. **C11-real:** Stargate Flare → Arbitrum One dust into the reserve (client proven; only pool addresses change).
 3. **C12-real:** SparkDEX swap leg with dust (fill in Flare router/quoter addresses).
 4. **Assembly:** full deposit path (Flare → HL) and withdraw path (HL → Flare) with dust, then the on-chain path on Flare mainnet, then cap ramp.
-5. **C9 (provisioned + signing verified live 2026-07-08):** the entire
-   tee-wallet custody path is built, tested, committed, and **run live on
-   Coston**. `tools/cmd/provision-wallet` ran the full 8-step lifecycle
+5. **C9 (CLOSED 2026-07-09; provisioned + traded live):** the entire tee-wallet
+   custody path is built, tested, committed, and **run end-to-end live**.
+   `tools/cmd/provision-wallet` ran the full 8-step lifecycle on Coston
    (createProject → createWallet → set+confirm 2-of-3 admins → close → multisig
-   threshold → addKey → confirmKey → enableWallet), gas-funding the fresh admins
-   from the deployer. The enclave generated key 0 for wallet
-   `0x98b19bb2…c092b95c`; its existence proof was fetched from the proxy and
-   confirmed on-chain. A live call to the enclave sign server (`/key-info` +
-   `/sign`) returned a public key and signature that both **recover to the
-   derived HL address `0x2CDA4363…C10E72`** — proving the TEE-custodied key
-   (never exported) signs correctly, over the exact `crypto.Sign(keccak256(msg))`
-   rule the HL action builder feeds (byte-identical to go-hyperliquid, unit-proven).
-   The registry (`config/wallet-registry.json`, gitignored) maps the user to the
-   wallet. Remaining: fund the HL address and drive one order through the
-   extension with `HL_KEY_MODE=tee-wallet` — a config/funding step with no
-   cryptographic uncertainty left.
+   threshold → addKey → confirmKey → enableWallet), gas-funding the fresh admins.
+   The enclave generated key 0 for wallet `0x98b19bb2…c092b95c` (HL address
+   `0x2CDA4363…C10E72`), confirmed on-chain. Then `TestTeeWalletOrderLive`
+   (internal/hl, `-tags hltestnet`) funded that account from the treasury and had
+   the **TEE-sealed key sign three real HL actions — SetAbstraction(unified)
+   [user-signed], a perp ETH limit order [L1-signed], and its cancel — all
+   accepted by HL** (oid 56216671517 rested on the book, then removed). The test
+   holds no private key for the account; every signature comes from the enclave
+   `/sign` endpoint (reached in the test via a `socat` sidecar publishing the
+   in-container sign server — no docker-compose change, no stack restart). The
+   registry (`config/wallet-registry.json`, gitignored) maps the user to the
+   wallet. **Only cross-machine key replication remains** (KeyDirectBackup/Restore
+   + SetMachinePathList) — a separate multi-machine track, not a blocker for
+   single-node custody.
 6. **C2 (blocked):** `batchedDepositWithPermit` — reopen if HL ever deploys it.
 
 ## Known caveats / notes
