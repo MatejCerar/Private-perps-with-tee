@@ -26,8 +26,10 @@ import (
 	"github.com/flare-foundation/go-flare-common/pkg/contracts/tee/extensiongovernance"
 	"github.com/flare-foundation/go-flare-common/pkg/contracts/tee/extensionmanager"
 	"github.com/flare-foundation/go-flare-common/pkg/contracts/tee/machinemanager"
+	"github.com/flare-foundation/go-flare-common/pkg/contracts/tee/machinepathmanager"
 	"github.com/flare-foundation/go-flare-common/pkg/contracts/tee/ownerallowlist"
 	"github.com/flare-foundation/go-flare-common/pkg/contracts/tee/verification"
+	"github.com/flare-foundation/go-flare-common/pkg/contracts/tee/walletbackupmanager"
 	"github.com/flare-foundation/go-flare-common/pkg/contracts/tee/walletkeymanager"
 	"github.com/flare-foundation/go-flare-common/pkg/contracts/tee/walletmanager"
 	"github.com/flare-foundation/go-flare-common/pkg/contracts/tee/walletprojectmanager"
@@ -48,6 +50,8 @@ type Support struct {
 	TeeWalletProjectManager *walletprojectmanager.WalletProjectManager
 	TeeWalletManager        *walletmanager.WalletManager
 	TeeWalletKeyManager     *walletkeymanager.WalletKeyManager
+	TeeWalletBackupManager  *walletbackupmanager.WalletBackupManager
+	TeeMachinePathManager   *machinepathmanager.MachinePathManager
 	TeeVerification         *verification.Verification
 	TeeExtensionRegistry    *extensionmanager.ExtensionManager
 	TeeExtensionGovernance  *extensiongovernance.ExtensionGovernance
@@ -138,6 +142,16 @@ func NewSupport(prv *ecdsa.PrivateKey, chainClient *ethclient.Client, addresses 
 		return nil, err
 	}
 
+	twbm, err := walletbackupmanager.NewWalletBackupManager(diamond, chainClient)
+	if err != nil {
+		return nil, err
+	}
+
+	tmpm, err := machinepathmanager.NewMachinePathManager(diamond, chainClient)
+	if err != nil {
+		return nil, err
+	}
+
 	sm, err := system.NewFlareSystemsManager(addresses.FlareSystemManager, chainClient)
 	if err != nil {
 		return nil, err
@@ -179,6 +193,8 @@ func NewSupport(prv *ecdsa.PrivateKey, chainClient *ethclient.Client, addresses 
 		TeeWalletManager:        twm,
 		TeeWalletKeyManager:     twkm,
 		TeeWalletProjectManager: twpm,
+		TeeWalletBackupManager:  twbm,
+		TeeMachinePathManager:   tmpm,
 		FlareSystemManager:      sm,
 		Fdc2Hub:                 ftdc,
 		TeeVerification:         tv,

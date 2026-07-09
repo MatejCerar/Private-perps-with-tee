@@ -158,10 +158,24 @@ cd tools && go run ./cmd/run-test -a ../config/coston/deployed-addresses.json -c
    `/sign` endpoint (reached in the test via a `socat` sidecar publishing the
    in-container sign server — no docker-compose change, no stack restart). The
    registry (`config/wallet-registry.json`, gitignored) maps the user to the
-   wallet. **Only cross-machine key replication remains** (KeyDirectBackup/Restore
-   + SetMachinePathList) — a separate multi-machine track, not a blocker for
-   single-node custody.
-6. **C2 (blocked):** `batchedDepositWithPermit` — reopen if HL ever deploys it.
+   wallet. **Cross-machine key replication is the only remaining C9 piece** — a
+   separate multi-machine track, not a blocker for single-node custody (below).
+6. **C9 multi-machine (in progress; replication deferred):** a second TEE node
+   (**node B**) is stood up and **registered to production on Coston**
+   (`docker-compose.nodeb.yaml` + `config/proxy/extension_proxy.coston.nodeb.docker.toml`,
+   committed). Node B boots with its own generated teeID `0xd44edcee…` (distinct
+   from node A's `0x41081F9F…`) and was registered via `register-tee rRap` (its
+   proxy exposed publicly with a `cloudflared` quick tunnel for the FDC
+   availability check). **The key-replication step itself (DirectBackup on A →
+   DirectRestore on B, gated by machine-path governance) is designed but deferred**
+   — `MachinePathManager`/`WalletBackupManager` bindings are added to
+   `tools/pkg/support`; the full recipe + a critical caveat (**node identity is
+   in-memory only — a node restart mints a NEW teeID, so node B must be
+   re-registered after any restart**) are captured in the multi-machine memory note.
+   To resume: bring up node B, re-tunnel, re-register, then build
+   `tools/cmd/replicate-key` (machine-path list → `/direct` push to both nodes →
+   DirectBackup → DirectRestore → verify node B `/key-info` == node A's key).
+7. **C2 (blocked):** `batchedDepositWithPermit` — reopen if HL ever deploys it.
 
 ## Known caveats / notes
 
