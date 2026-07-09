@@ -180,8 +180,25 @@ cd tools && go run ./cmd/run-test -a ../config/coston/deployed-addresses.json -c
 ## Known caveats / notes
 
 - The C8 e2e runs in **treasury funding mode** (the runbook's model); bridge-mode
-  handlers are live-proven separately. A bridge-mode on-chain run needs
-  `HL_FUNDING_MODE=bridge` + `ARB_*` env forwarded into the compose stack.
+  handlers are live-proven separately (`TestBridgeHandlersLive`). A bridge-mode
+  on-chain run uses `docker-compose.bridge.yaml` (`HL_FUNDING_MODE=bridge` + `ARB_*`).
+- **Bridge-mode on-chain e2e — ATTEMPTED, blocked at the relay (2026-07-09).**
+  Node A was reconfigured to bridge mode + re-registered, and a DEPOSIT instruction
+  was sent on-chain, but **it was never relayed to the extension's main queue** —
+  the proxy was healthy (DB in sync, signing policy initialized, direct-queue
+  heartbeats flowing) but no data-provider-relayed instruction reached the node, so
+  the bridge deposit never ran (run-test timed out at 5 min). Root cause is the
+  **data-provider relay to a freshly re-registered node** (likely signing-policy /
+  reward-epoch propagation), NOT bridge mechanics — the bridge handlers are already
+  proven. Restarting the node also churns its teeID (see next note), requiring
+  re-registration. Node A was restored to treasury mode afterward. Reproduce/retry
+  once the relay propagates; `run-test` now takes `-depositUsd`/`-withdrawUsd` and
+  waits longer (a bridge DEPOSIT blocks up to `hlCreditTimeout`=4 min).
+- **Node teeID is regenerated on some restarts.** `node.Initialize` generates a
+  fresh identity key (no persistence volume); observed: it changed on a restart
+  that also recreated the proxy (0x41081F9F→0x82eed3f7) but was stable on a
+  node-only restart. Any teeID change orphans the old on-chain registration and the
+  in-enclave wallet keys, and needs a fresh `register-tee`.
 - The e2e leaves a small ETH perp position + a resting PURR order on the derived
   account `0x74E2…` (the driver has no close step; harmless on testnet).
 - The throwaway live-test users keep ~0.5 USDC dust each by design (drain leaves

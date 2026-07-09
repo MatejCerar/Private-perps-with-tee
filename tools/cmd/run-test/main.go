@@ -35,6 +35,8 @@ func main() {
 	instructionSenderF := flag.String("instructionSender", "", "instructionSender address")
 	hlURLf := flag.String("hlUrl", envOr("HYPERLIQUID_URL", "https://api.hyperliquid-testnet.xyz"), "hyperliquid info api url for verification")
 	treasuryf := flag.String("treasury", "", "treasury HL address for a pre-send preflight (optional)")
+	depositf := flag.Float64("depositUsd", 100, "DEPOSIT amount (USD); lower for bridge mode within the reserve's Arbitrum USDC")
+	withdrawf := flag.Float64("withdrawUsd", 20, "WITHDRAW amount (USD)")
 	flag.Parse()
 
 	instructionSenderAddress := common.HexToAddress(*instructionSenderF)
@@ -80,7 +82,7 @@ func main() {
 
 	// --- Step 1: DEPOSIT -----------------------------------------------------
 	logger.Infof("Sending DEPOSIT instruction...")
-	depPayload, _ := json.Marshal(map[string]any{"usdAmount": 100})
+	depPayload, _ := json.Marshal(map[string]any{"usdAmount": *depositf})
 	depID, _, err := instrutils.SendDeposit(testSupport, instructionSenderAddress, depPayload)
 	if err != nil {
 		fccutils.FatalWithCause(err)
@@ -102,8 +104,8 @@ func main() {
 	logger.Infof("derived HL account: %s  balanceUsd=%.2f", dep.HLAddress, dep.BalanceUsd)
 	// Ledger is cumulative in memory across runs (until the extension restarts),
 	// so assert the deposit credited at least its amount rather than an exact total.
-	if dep.BalanceUsd < 100 {
-		fccutils.FatalWithCause(errors.Errorf("expected ledger balance >= 100 after a 100 deposit, got %.2f", dep.BalanceUsd))
+	if dep.BalanceUsd < *depositf {
+		fccutils.FatalWithCause(errors.Errorf("expected ledger balance >= %.2f after the deposit, got %.2f", *depositf, dep.BalanceUsd))
 	}
 
 	// --- Step 2: PERP market order -------------------------------------------
@@ -183,7 +185,7 @@ func main() {
 
 	// --- Step 4: WITHDRAW ----------------------------------------------------
 	logger.Infof("Sending WITHDRAW instruction...")
-	wdPayload, _ := json.Marshal(map[string]any{"usdAmount": 20})
+	wdPayload, _ := json.Marshal(map[string]any{"usdAmount": *withdrawf})
 	wdID, _, err := instrutils.SendWithdraw(testSupport, instructionSenderAddress, wdPayload)
 	if err != nil {
 		fccutils.FatalWithCause(err)

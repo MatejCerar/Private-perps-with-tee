@@ -1,0 +1,19 @@
+# Override: run the extension node in BRIDGE funding mode (real Arbitrum Bridge2
+# deposit + withdraw3) instead of the default treasury/spotSend mode, so the
+# on-chain instruction path can be exercised end-to-end in bridge mode.
+#
+# Usage (merge on top of the coston stack):
+#   docker compose -f docker-compose.yaml -f docker-compose.coston.yaml -f docker-compose.bridge.yaml up -d
+#
+# ARB_RESERVE_KEY is intentionally unset — the node defaults it to HL_TREASURY_KEY
+# (already forwarded), which is the funded Arbitrum Sepolia reserve. Addresses are
+# the HL-testnet defaults on Arbitrum Sepolia (also the code defaults; set here to
+# be explicit).
+services:
+  extension-tee:
+    environment:
+      - HL_FUNDING_MODE=bridge
+      - ARBITRUM_RPC_URL=${ARBITRUM_RPC_URL:-https://sepolia-rollup.arbitrum.io/rpc}
+      - ARB_USDC_ADDRESS=${ARB_USDC_ADDRESS:-0x1baAbB04529D43a73232B713C0FE471f7c7334d5}
+      - HL_BRIDGE2_ADDRESS=${HL_BRIDGE2_ADDRESS:-0x08cfc1B6b2dCF36A1480b99353A354AA8AC56f89}
+      - HL_MIN_DEPOSIT_USD=${HL_MIN_DEPOSIT_USD:-5}

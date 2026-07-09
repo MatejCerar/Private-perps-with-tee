@@ -19,7 +19,10 @@ import (
 	"github.com/pkg/errors"
 )
 
-const repeats = 40 // ~80s at 2s/attempt; covers HL calls + async result posting
+const repeats = 150 // ~300s at 2s/attempt; the loop returns on the first posted
+// result, so this only extends the wait for genuinely slow steps — notably a
+// bridge-mode DEPOSIT, where the extension blocks on the HL credit (hlCreditTimeout
+// = 4 min). Fast steps still return immediately.
 
 func TeeInfo(nodeURL string) (*types.SignedTeeInfoResponse, error) {
 	result, err := http.Get(nodeURL + "/info")
