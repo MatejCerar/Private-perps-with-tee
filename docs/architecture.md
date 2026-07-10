@@ -1,607 +1,562 @@
-# hype-accounts — Architecture &amp; Testing Guide
+# hype-accounts — Architecture
 
-A deep, self-contained reference for **everything this extension is, how every part
-works, and how it's tested.** For *where things currently stand* (proven / deferred /
-blocked) see [`STATUS.md`](STATUS.md); for the mainnet rollout plan see
-[`mainnet-runbook.md`](mainnet-runbook.md); for the HL-specific runbook see
-[`hyperliquid.md`](hyperliquid.md).
+A systems-level explanation of **what this is, how it works, and why it's safe** — the
+design and the reasoning, illustrated with diagrams and a few focused snippets, rather than
+a code tour. For *where each component stands* (proven / deferred / blocked) see
+[`STATUS.md`](STATUS.md); for the mainnet rollout see [`mainnet-runbook.md`](mainnet-runbook.md);
+for a map from these concepts to the actual packages, see the [code map](#appendix-code-map).
 
 ## Contents
-1. [What this is](#1-what-this-is)
-2. [The big picture](#2-the-big-picture)
-3. [The custody model & the byte-equality insight](#3-the-custody-model--the-byte-equality-insight)
-4. [The Hyperliquid trading layer](#4-the-hyperliquid-trading-layer)
-5. [The signing layer (hlsign)](#5-the-signing-layer-hlsign)
-6. [The funding path](#6-the-funding-path)
-7. [Reconciliation](#7-reconciliation)
-8. [The Flare→Arbitrum leg (Stargate + swap)](#8-the-flarearbitrum-leg-stargate--swap)
-9. [Key custody in depth (C9 / PMW)](#9-key-custody-in-depth-c9--pmw)
-10. [The operator tools](#10-the-operator-tools)
-11. [Configuration reference](#11-configuration-reference)
-12. [Testing](#12-testing)
-13. [Component status (C1–C12)](#13-component-status-c1c12)
-14. [Design decisions & subtleties](#14-design-decisions--subtleties)
+1. [What we're building](#1-what-were-building)
+2. [The trust & security model](#2-the-trust--security-model)
+3. [How the system fits together](#3-how-the-system-fits-together)
+4. [Acting as the user without ever holding their key](#4-acting-as-the-user-without-ever-holding-their-key)
+5. [How orders reach Hyperliquid](#5-how-orders-reach-hyperliquid)
+6. [How money moves: the funding path](#6-how-money-moves-the-funding-path)
+7. [Keeping honest books](#7-keeping-honest-books)
+8. [Bringing a TEE wallet into existence](#8-bringing-a-tee-wallet-into-existence)
+9. [What's proven, what's open](#9-whats-proven-whats-open)
+10. [Design principles](#10-design-principles)
+11. [Appendix: the knobs & the code map](#appendix-the-knobs--the-code-map)
 
 ---
 
-## 1. What this is
+## 1. What we're building
 
-`hype-accounts` is a **Flare Confidential Compute (FCC) extension** — code that runs
-inside a Trusted Execution Environment (TEE) behind Flare's TEE infrastructure — that
-**custodies and controls one Hyperliquid (HL) trading account per user.** A user on
-Flare issues instructions (deposit, place order, cancel, withdraw); the extension moves
-real value onto/off of Hyperliquid and trades on the user's behalf, signing every action
-with a key the user never touches.
+A service that lets a user on **Flare** own and operate a **Hyperliquid (HL)** trading
+account — deposit, place and cancel orders, withdraw — **without ever handling the private
+key that controls that account, and without trusting the operator who runs the service.**
+The key is created and used inside a **Trusted Execution Environment (TEE)**; the user
+drives it with on-chain instructions; the executing code is itself attested and registered
+on-chain, so anyone can verify that the thing holding the funds is exactly the reviewed
+code and nothing else.
 
-Two axes define its behavior, each a config flag:
+```mermaid
+flowchart LR
+  U["User on Flare"] -->|"on-chain intent"| F["Flare contracts"]
+  F -->|"cosign + relay"| T["TEE: extension + sealed keys"]
+  T -->|"signed orders"| HL["Hyperliquid"]
+  T <-->|"deposits / withdrawals"| ARB["Arbitrum (Bridge2)"]
+```
 
-- **Key custody** (`HL_KEY_MODE`): **`seed`** (per-user keys derived in-process from a
-  master seed) or **`tee-wallet`** (keys sealed inside the TEE, reached over a sign
-  server — the "PMW" / private-managed-wallet model, tracked as **C9**).
-- **Funding mode** (`HL_FUNDING_MODE`): **`treasury`** (deposits are HL `spotSend`s from
-  a shared treasury) or **`bridge`** (deposits are real Arbitrum **Bridge2** deposits;
-  withdrawals are `withdraw3`).
-
-The headline design achievement is that **switching custody from `seed` to `tee-wallet`
-changes only *where the private key lives*, not a single byte on the wire** — proven, not
-assumed (§3).
+Think of it as a **programmable, verifiable custodian**: the user says "buy 0.1 ETH," that
+intent travels on-chain, a network of validators relays it into the enclave, and the enclave
+signs the corresponding order with a key no human can extract. Everything below serves two
+goals — **the user's funds are safe even from the operator**, and **the books always reflect
+reality.**
 
 ---
 
-## 2. The big picture
+## 2. The trust & security model
 
-### Request flow
+This is the heart of the design, so it comes first.
 
-```
-Flare user  ──on-chain instruction──▶  InstructionSender (Flare contract)
-                                             │
-                                    data providers relay + cosign (threshold weight)
-                                             │
-                                        TEE proxy (public)
-                                             │  (main queue)
-                                     extension (inside TEE)
-                          ┌──────────────────┼───────────────────┐
-                      accountFor(user)   ledger (in-mem)     signer (seed|TEE)
-                          │
-                     hl.Account  ──signed action──▶  Hyperliquid /exchange
-```
+### Where the keys live
 
-Instructions arrive on-chain, are relayed+cosigned by Flare data providers, reach the
-extension through the TEE proxy, and are processed asynchronously (each handler returns a
-`pending` status immediately, then POSTs the final result back to the tee-node at
-`/result`). This on-chain path is **C8**.
+Every user has their own Hyperliquid account, controlled by a secp256k1 key. That key lives
+in one of two places, chosen by configuration:
 
-### The funding path (Flare → Arbitrum → Hyperliquid)
-
-```
-Flare user asset ─(SparkDEX swap)→ USDC.e ─(Stargate OFT)→ native USDC on Arb One
-   → TEE Arbitrum reserve → (Bridge2 deposit) → HL credit
-Withdraw is the reverse: HL withdraw3 → reserve → Stargate → SparkDEX → Flare user.
+```mermaid
+flowchart TB
+  subgraph TEE["Trusted Execution Environment — attested, isolated"]
+    direction LR
+    subgraph S["Seed mode"]
+      E1["Extension"] -->|"derives + holds in memory"| K1["per-user key"]
+    end
+    subgraph W["TEE-wallet mode — the target"]
+      E2["Extension"] -->|"'sign this' request"| SS["Signing component"]
+      SS --> K2["sealed key — never leaves"]
+    end
+  end
+  E1 -.->|"signs"| HLa["Hyperliquid"]
+  SS -.->|"returns signature"| E2
+  E2 -.->|"posts signed action"| HLb["Hyperliquid"]
 ```
 
-HL settles deposits/withdrawals on **Arbitrum** (Bridge2). The extension holds an
-**Arbitrum reserve** that fronts each user's Bridge2 deposit. The Flare→Arbitrum front of
-the pipeline (SparkDEX swap + Stargate bridge) has **proven client code but is not yet
-wired into the production handler** — today the reserve is assumed already funded on
-Arbitrum (§8).
+- **Seed mode** — the extension holds one master secret (inside the TEE) and
+  deterministically derives a distinct key per user. Per-user keys exist only in the
+  enclave's memory, only while needed. Simple; everything is one process.
+- **TEE-wallet mode (the target, "PMW")** — each user's key is **generated inside the
+  enclave and never leaves it.** It lives in a *separate* signing component of the TEE node,
+  not in the extension's memory. The extension can *ask* it to sign a specific message but
+  can never read the key. This is defense in depth: even a bug in the trading logic can't
+  leak a key it was never given.
 
-### Deployment topology (what the tools operate against)
+Moving between these changes nothing about behavior (§4) — TEE-wallet mode is strictly
+stronger and is where the system is headed.
 
-- **TEE node** (`tee-node`) — runs the extension + a **sign server** on `SIGN_PORT`
-  (7701) exposing `POST /sign/{walletID}/{keyID}` and `GET /key-info/{walletID}/{keyID}`.
-  Its **identity (`teeID`) is its enclave public key**, generated fresh each boot (no
-  persistence) — so a restart can mint a new identity requiring re-registration.
-- **TEE proxy** (`tee-proxy`) — public front; serves `/info`, `/wallet/*`, `/action/*`,
-  relays instructions to the node's queues.
-- **FlareTeeManager diamond** — one on-chain address exposing every TEE facet
-  (`MachineManager`, `ExtensionManager`, `WalletManager`, `WalletKeyManager`,
-  `WalletProjectManager`, `WalletBackupManager`, `MachinePathManager`, `Verification`,
-  `OwnerAllowlist`, …). All facet bindings in `tools/pkg/support` point at this one
-  address; the diamond routes each call to the right facet.
+### What the TEE actually guarantees
+
+Two properties matter here:
+
+1. **Isolation** — code and data inside the enclave (keys, seed, signing logic) are shielded
+   from the host OS and from whoever operates the machine. The operator runs the box but
+   cannot look inside it.
+2. **Attestation** — the enclave can prove *which exact code* it is running. Flare's
+   contracts pin an allowed **code hash**; a node must present a valid attestation to be
+   registered and to hold wallet keys. An operator therefore cannot quietly swap in a
+   modified build that exfiltrates keys — a different build has a different hash and the
+   network won't trust it.
+
+Together: **you trust the reviewed code and the hardware, not the person running it.** The
+registration + attestation flow is what binds "this key" to "this attested code on this
+machine."
+
+### Why an attacker — including the operator — can't steal funds
+
+- The trading key is **never exported** in TEE-wallet mode; the extension only receives
+  *signatures over specific messages*.
+- The signing component is reachable only from **inside the enclave's own network** — it's
+  not a public service — so "who can ask it to sign" is bounded to the attested extension.
+- Instructions are **on-chain and consensus-relayed** (§3): no single operator can secretly
+  inject a "withdraw everything to me" action; every action originates from an auditable
+  instruction that a threshold of independent data providers agreed to relay.
+- The system **verifies before it trusts a signature** (§4): it reconstructs the exact bytes
+  it expects to sign and checks them against the canonical form before acting.
+
+### An honest boundary
+
+Two things stated plainly. First, in **seed mode** the derived key does sit in the
+extension's memory (inside the enclave) while in use — its safety rests on TEE isolation of
+that process; TEE-wallet mode removes even that exposure. Second, the signing component will
+sign *any well-formed message it's asked to* for a wallet it holds — the boundary is
+**network isolation + attestation** (only the attested extension can reach it), not a
+per-message policy inside the signer. Both are deliberate, and both are why the
+attestation/registration story matters as much as the enclave itself.
 
 ---
 
-## 3. The custody model & the byte-equality insight
+## 3. How the system fits together
 
-Everything in the extension signs through one abstraction (`internal/keys/signer.go`):
+### The players
+
+```mermaid
+flowchart TB
+  subgraph Flare["Flare (L1)"]
+    IS["InstructionSender"]
+    DIA["FlareTeeManager diamond<br/>(registration · wallets · governance · attestation)"]
+    DP["Data providers"]
+  end
+  subgraph Enclave["TEE machine"]
+    PX["TEE proxy (public front)"]
+    ND["TEE node: extension + signing component"]
+  end
+  HL["Hyperliquid API"]
+  ARB["Arbitrum Bridge2"]
+  IS --> DP --> PX --> ND
+  ND <--> DIA
+  ND --> HL
+  ND <--> ARB
+```
+
+- **The extension** — our code, inside the TEE, turning intents into HL actions and keeping
+  the books.
+- **The TEE node** — the enclave runtime hosting the extension and the **signing component**
+  (which holds wallet keys). Its on-chain **identity is its enclave public key.**
+- **The TEE proxy** — the public front door; feeds relayed instructions to the node, which
+  itself stays behind the firewall.
+- **Flare's contracts** — one "diamond" contract exposes the whole TEE-management surface
+  (registering machines, creating wallets/keys, governing admins, verifying attestations).
+  Trust is anchored here.
+- **Hyperliquid** — the exchange, over its HTTP API.
+- **Arbitrum** — where HL settles deposits/withdrawals (its Bridge2 contract). This is why
+  moving money involves Arbitrum at all (§6).
+
+### Why instructions go on-chain
+
+A user doesn't call the extension directly — they emit an **instruction on Flare**, and a
+threshold of **data providers** must cosign and relay it before the enclave acts.
+
+```mermaid
+sequenceDiagram
+  participant U as User (Flare)
+  participant DP as Data providers
+  participant PX as TEE proxy
+  participant EX as Extension (enclave)
+  participant HL as Hyperliquid
+  U->>DP: emit instruction on-chain
+  DP->>DP: cosign (threshold weight)
+  DP->>PX: relay
+  PX->>EX: deliver to the node
+  EX-->>PX: "pending" (ack immediately)
+  EX->>HL: signed action (may take minutes)
+  EX-->>PX: final result (posted async)
+```
+
+This buys three things: **no unilateral operator action** (actions require on-chain origin +
+validator consensus), **auditability** (a permanent record of what was requested), and
+**"fire and forget"** semantics (no ordering guarantees; replay prevented by nonces; each
+instruction self-authorizing). Because a deposit or withdraw can take minutes, the extension
+acknowledges *pending* immediately and reports the real result once the money has moved.
+
+---
+
+## 4. Acting as the user without ever holding their key
+
+The single most important idea: **the extension treats "a key" as an address plus the
+ability to sign a message — nothing more.** It never assumes the key is in its own memory.
+That one abstraction is what makes seed vs. TEE-wallet a *deployment decision*, not a code
+change. In the code it is quite literally two methods:
 
 ```go
+// The whole custody abstraction. A Signer might be a local key,
+// a seed-derived key, or a key sealed in the enclave — callers can't tell.
 type Signer interface {
     Address() common.Address
-    SignPreimage(preimage []byte) ([]byte, error)   // -> 65-byte [R‖S‖V]
-}
-type Keyer interface { UserSigner(user common.Address) (Signer, error) }
-```
-
-**Why a *preimage*, not a digest?** The tee-node sign server *always applies keccak256
-itself* — its algorithm is `crypto.Sign(keccak256(msg))`. So the interface standardizes on
-"hand me the bytes that get hashed." If it took a digest, the TEE server would double-hash.
-Because of this one decision, three key sources are interchangeable and **produce
-byte-identical signatures**:
-
-| Signer | Where the key lives | `SignPreimage` |
-|---|---|---|
-| `rawSigner` | in-process `*ecdsa.PrivateKey` | `crypto.Sign(keccak256(preimage), priv)` |
-| `SeedKeyer`→`rawSigner` | derived from `HL_MASTER_SEED` (HKDF) | same, over the derived key |
-| `teeWalletSigner` | **sealed in the TEE** | `POST /sign` → enclave signs `crypto.Sign(keccak256(preimage))` |
-
-`rawSigner` is a *deliberate re-implementation* of the enclave's leaf algorithm so the
-seed path and the TEE path emit the same bytes. Two canonical preimages:
-
-- **EIP-712** (HL actions): `0x19 0x01 ‖ domainSeparator ‖ structHash` (`EIP712Preimage`).
-- **Arbitrum legacy tx**: `RLP(nonce,gasPrice,gas,to,value,data,chainID,0,0)`.
-
-**The correctness guard** (`SignLegacyTx`, `signer.go:96`): before signing an Arbitrum tx,
-it reconstructs the EIP-155 RLP preimage and **asserts
-`keccak256(preimage) == go-ethereum's types.Signer.Hash(tx)`** — a subtly-wrong preimage
-fails loudly rather than silently recovering to the wrong address. Once this passes for the
-seed path, the TEE path is *guaranteed* correct because it applies the identical
-keccak256+sign to the identical bytes.
-
-**Per-user key derivation** (`DeriveUserKey`, `derive.go:33`): HKDF-SHA256 over the master
-seed with `info = "hl-account:" + lowercase(user.Hex()) + counter`, retrying the counter
-until the 32 bytes are a valid secp256k1 scalar. Deterministic: same `(seed, user)` → same
-key/address.
-
-This byte-equality is **proven by tests**, not asserted (see §12): `rawSigner ==
-crypto.Sign`, `teeWalletSigner == rawSigner` over a mock sign server, `SignLegacyTx ==
-types.SignTx`, `EIP712Preimage == apitypes` digest, and `hlsign == go-hyperliquid`.
-
----
-
-## 4. The Hyperliquid trading layer
-
-`internal/hl/account.go` defines an `Account` interface and two factories:
-
-```go
-type Account interface {
-    Address() string
-    PlaceOrder(ctx, req OrderReq) (OrderResult, error)
-    Cancel(ctx, coin string, oid int64) error
-    SendUSD(ctx, dest string, amount float64) error       // spotSend
-    Withdraw(ctx, dest string, amount float64) error      // withdraw3
-    ClassTransfer(ctx, amount float64, toPerp bool) error // usdClassTransfer
-    SpotUSDC(ctx) (float64, error)
-    PerpWithdrawable(ctx) (float64, error)
-    SetLeverage(ctx, coin string, leverage int, isCross bool) error
-    SetAbstraction(ctx, mode string) error
-    Positions(ctx) (PositionsSnapshot, error)
+    SignPreimage(preimage []byte) (signature []byte, err error) // 65-byte [R‖S‖V]
 }
 ```
 
-- **`realFactory`** (`NewRealFactory`, seed mode) — builds a `go-hyperliquid` `Exchange`
-  **with the raw key** and wraps it in a `realAccount` whose `sx` (signer-exchange) is
-  `nil`. State-changing calls dispatch to go-hyperliquid's own signing.
-- **`teeWalletFactory`** (`NewTeeWalletFactory`, tee-wallet mode) —
-  `AccountForSigner(signer)` builds a **read-only** `Exchange` using a fixed throwaway key
-  (`readOnlyKeyHex = "111…1"`) **purely for `Info()` reads**, plus a `signerExchange` (`sx`)
-  for all writes. The account is addressed by `signer.Address()`; the throwaway key never
-  signs. So reads and the custody key are **decoupled**.
+### The one insight that makes it work
 
-Every mutating method on `realAccount` is `if a.sx != nil { return a.sx.<x>(...) }` else
-the go-hyperliquid path. Reads (`SpotUSDC`, `PerpWithdrawable`, `Positions`) always use
-`a.ex.Info()` keyed on the address. `SetAbstraction` is special — it always goes through
-`hlsign` (go-hyperliquid has no `userSetAbstraction` action).
+Notice the method is `SignPreimage` — it takes the **bytes *before* hashing**, not a
+finished 32-byte digest. That's deliberate: the enclave's signer always does the hash itself
+(`sign(keccak256(msg))`). By standardizing on "hand me the bytes that get hashed," a local
+key and an enclave-sealed key become **completely interchangeable** — give either the same
+preimage and you get the *same signature bytes back*.
 
-**`signerExchange`** (`internal/hl/signerexchange.go`) is the tee-wallet write path. It
-**reuses go-hyperliquid's exported wire types** (`OrderAction`, `OrderWire`,
-`CancelAction`, …) and a read-only `Info` — only the signing leaf is swapped for `hlsign`.
-Key points:
-- **Strictly-increasing millisecond nonces** (`nextNonce`, mutex-guarded) — HL rejects
-  non-increasing nonces.
-- `placeOrder` builds a limit (`Tif:Gtc`) or market (aggressive IOC at `mid±5%`) order,
-  formats prices/sizes via `floatToWire`, and POSTs `{action, nonce, signature}` to
-  `/exchange`. Example wire body:
-  ```json
-  {"action":{"type":"order","orders":[{"a":<asset>,"b":true,"p":"3000","s":"0.5",
-     "r":false,"t":{"limit":{"tif":"Gtc"}}}],"grouping":"na"},
-   "nonce":<ms>,"signature":{"r":"0x…","s":"0x…","v":27}}
-  ```
-- `cancel`, `setLeverage`, `withdraw` (withdraw3), `sendUSD` (spotSend), `classTransfer`
-  (usdClassTransfer) each build their action and post it.
-- **`floatToWire`** reproduces go-hyperliquid's exact float formatting (`%.8f`, reject if
-  precision loss ≥1e-12, trim zeros) so the signed msgpack matches byte-for-byte.
+Everything the system ever signs collapses to one of two preimage shapes:
 
-**`internal/ledger/ledger.go`** — the extension's authoritative *off-chain* view of each
-user's USD balance + recent orders, keyed by the **Flare** address. `Credit`/`Debit`
-(errors on overdraft)/`Adjust` (signed delta, clamps at 0 — for reconciliation's downward
-corrections). It's a cache of truth, realigned to real HL equity by reconciliation (§7).
+```
+HL action        →  preimage = 0x19 0x01 ‖ EIP-712 domainSeparator ‖ structHash
+Arbitrum tx      →  preimage = RLP(nonce, gasPrice, gas, to, value, data, chainID, 0, 0)
+```
+
+So no matter what we're doing — placing an order, withdrawing to Arbitrum, funding a user —
+it reduces to "build the right preimage, then `SignPreimage`," and *where* that signing
+happens is just routing:
+
+```mermaid
+flowchart LR
+  O["HL order / cancel"] --> A["msgpack hash → phantom agent → EIP-712"]
+  W["HL withdraw / transfer"] --> B["EIP-712 typed data"]
+  T["Arbitrum tx"] --> C["EIP-155 RLP"]
+  A --> P["preimage bytes"]
+  B --> P
+  C --> P
+  P --> SP{"Signer.SignPreimage"}
+  SP -->|"seed mode"| K1["in-process key"]
+  SP -->|"tee-wallet mode"| K2["enclave signing component"]
+```
+
+This isn't a hope — it's **verified byte-for-byte**. The system reproduces the enclave's
+exact hash-and-sign for the local path, and tests assert equality:
+
+```
+rawSigner.SignPreimage(p)      ==  crypto.Sign(keccak256(p), key)   // local == the primitive
+teeWalletSigner.SignPreimage(p) ==  rawSigner.SignPreimage(p)        // sealed == local, same key
+```
+
+So "switch a user from a locally-derived key to a TEE-sealed key" provably changes *nothing*
+about what lands on the wire.
+
+### Guarding against signing the wrong thing
+
+Signatures are dangerous because a subtly-wrong input still produces a valid-looking
+signature — over the wrong data, recovering to the wrong account. So before trusting an
+Arbitrum signature the system **reconstructs the exact bytes it means to sign and checks them
+against the canonical encoding**, refusing to sign on a mismatch:
+
+```
+preimage = RLP(nonce, gasPrice, gas, to, value, data, chainID, 0, 0)
+assert  keccak256(preimage) == the library's own tx signing hash    // else: refuse
+```
+
+That turns an entire class of "off-by-one-field" custody bugs into a loud, immediate failure.
+
+### Why we re-implemented Hyperliquid's signing
+
+Hyperliquid's own client library can only sign with a raw in-process key — exactly what we
+refuse to hold. So the system reproduces HL's (finicky) signing scheme but routes the final
+signature through the key-agnostic `Signer`. The delicate encoding pieces are copied verbatim
+from HL's library and pinned to a specific version, and tests assert our output matches
+theirs exactly — because if the encoding drifts by a byte, HL silently rejects the signature.
 
 ---
 
-## 5. The signing layer (hlsign)
+## 5. How orders reach Hyperliquid
 
-`internal/hl/hlsign/hlsign.go` reproduces Hyperliquid's two signing schemes but routes the
-final signature through a `keys.Signer`. The msgpack/typed-data primitives are **vendored
-verbatim from `go-hyperliquid@v0.33.1`** (pinned) so encoding can't drift; only the signing
-leaf (`signInner`) is swapped.
+Each user's HL account is addressed by their key's address. **Reads** (balances, positions,
+open orders) need no key — they're just queries about an address. **Writes** need a
+signature, and Hyperliquid has **two families** of them:
 
-**L1 actions** (order / cancel / updateLeverage) — `SignL1Action`:
-`msgpack(action)` → `convertStr16ToStr8` (match Python's msgpack) → append nonce (8-byte BE)
-+ vault flag → `keccak256` = **actionHash** → **phantom agent** `{source:"a"|"b",
-connectionId:hash}` → EIP-712 typed data with domain `{Exchange, 1, chainId 1337, 0x0}` →
-`signInner`. (ChainId `1337` is a synthetic signing-domain id, not a real chain.)
-
-**User-signed actions** (withdraw3 / spotSend / usdClassTransfer / userSetAbstraction) —
-`SignUserAction`: injects `signatureChainId=0x66eee` + `hyperliquidChain`, builds EIP-712
-typed data with domain `{HyperliquidSignTransaction, 1, chainId 421614, 0x0}` and
-`primaryType` (e.g. `HyperliquidTransaction:Withdraw`) → `signInner`.
-
-Both converge in **`signInner`**:
-```
-domainSep  = HashStruct("EIP712Domain", domain)
-structHash = hashStructLenient(typedData, primaryType, message)
-sig        = signer.SignPreimage(EIP712Preimage(domainSep, structHash))  // 0x1901‖ds‖sh
-return {R: sig[:32], S: sig[32:64], V: sig[64]+27}
-```
-`hashStructLenient` hashes **only the fields declared in `primaryType`**, ignoring extras
-like `signatureChainId` — mirroring Python `eth_account`, which is what HL validates
-against. The two schemes differ *only* in how `domainSeparator`/`structHash` are produced;
-both end at one `SignPreimage` call — which is exactly why a TEE key can sign HL actions
-identically.
-
----
-
-## 6. The funding path
-
-`internal/extension/` orchestrates instructions into value movement. The `Extension`
-struct holds the seed factory, master seed, ledger, the custody keyer/signerFactory, the
-funding-mode fields (treasury account **or** Arbitrum reserve), a per-user account cache, a
-per-user mutex map (`userLocks`), and a `unifiedSet` (accounts switched to HL unified mode
-once).
-
-`accountFor(user)` is the single fork point: **tee-wallet** →
-`signerFactory.AccountForSigner(keyer.UserSigner(user))`; **seed** →
-`factory.Account(DeriveUserKey(seed, user), addr)`. Results are cached.
-
-Instructions (`DEPOSIT`/`PLACE_ORDER`/`CANCEL`/`WITHDRAW`) are decoded from the on-chain
-`DataFixed`, the inner payload is an ABI-`(address user, bytes jsonPayload)` envelope, and
-each handler runs asynchronously (returns `pending`, then POSTs the result to the
-tee-node's `/result`).
-
-### The two funding modes
-
-| | **treasury** (default) | **bridge** |
+| Action family | Examples | How it's signed |
 |---|---|---|
-| Deposit | HL `spotSend` from a shared treasury | reserve → user's Arb addr → **Bridge2** → HL credit |
-| Withdraw | HL `spotSend` back to treasury | HL **`withdraw3`** → the Arbitrum reserve |
-| HL account mode | standard (spot/perp split; per-order class-transfer sweep) | **unified** (one pool; switched at first credit) |
-| Min deposit | none (only caps) | `MinDepositUSD` (5.0) — sub-min deposits are lost |
-| Reconciler | off | on |
+| **Trading (L1)** | place order, cancel, set leverage | hash a compact binary (msgpack) encoding of the action + nonce, wrap in a synthetic "agent" struct, sign as EIP-712 under a fixed *exchange* domain |
+| **Account (user-signed)** | withdraw to Arbitrum, transfer USDC, spot↔perp move, switch account mode | sign directly as EIP-712 typed data under HL's *transaction* domain |
 
-> **Note:** in the production constructor `New`, the tee-wallet custody override *and* the
-> background reconciler are wired only on the **bridge** branch. So tee-wallet custody and
-> reconciliation are effectively bridge-mode features today.
+Both, as §4 showed, converge to a single `SignPreimage` call — only the domain and structure
+differ. The extension builds the right structure, gets the signature, and posts
+`{action, nonce, signature}` to HL's exchange endpoint. What actually goes on the wire for a
+limit order is small and worth seeing once:
 
-### The reserve model (bridge mode)
-
-The **reserve** is a single TEE-controlled Arbitrum identity (`reserveKey`/`reserveSigner`/
-`reserveAddr`) holding native USDC + ETH gas, that **fronts** every user's Bridge2 deposit.
-Because Bridge2 credits the *sending* address, the reserve cannot deposit on a user's
-behalf directly — it must first move USDC (and gas) to the user's *own* Arbitrum address,
-which then deposits. Withdrawals flow *back into* the reserve, making it a recycling float
-hub. It also has its own HL account (`reserveHL`) to top up its Arbitrum USDC from HL via
-`withdraw3` when auto-refill is on.
-
-**Full DEPOSIT flow (`processDepositBridge`):**
-1. Decode + validate (`≥ MinDepositUSD`, `≤ MaxDepositUSD`, total cap).
-2. **Lock the per-user mutex** (serializes same-user ops + guards the ledger vs the
-   reconciler).
-3. Resolve `userSigner`/`userAddr`/`acct`.
-4. **`ensureReserveFor(amount)` first** — before spending any gas, so a short reserve fails
-   cleanly with no ETH stranded at the user.
-5. Top up the user's Arbitrum ETH gas if below threshold (from the reserve).
-6. `TransferUSDC(reserve → userAddr)` and wait for it to land (Bridge2 credits the sender).
-7. Snapshot HL equity → `DepositToBridge(userSigner, …)` (a Bridge2 deposit is just an
-   ERC20 `transfer` to the bridge, signed by the **user's** signer so HL credits the user)
-   → **`waitForHLCredit`** (polls up to `hlCreditTimeout` = 4 min). On timeout: fail
-   loudly and **neither credit nor debit** — a late credit is later absorbed by
-   reconciliation, avoiding double-credit on retry.
-8. `ensureUnified` (once, after first credit) — HL rejects `SetAbstraction` on a
-   never-deposited account, so it must run *after* the first credit.
-9. `ledger.Credit(user, amount)`.
-
-**Full WITHDRAW flow (`processWithdrawBridge`):** lock user mutex → `ledger.Debit` first
-(errors on insufficient) → `acct.Withdraw(reserveAddr, amount)` (HL `withdraw3` delivers
-native USDC to the reserve in ~3–4 min, **minus a flat ~1 USDC fee**) → refund the ledger
-on failure.
-
-**Concurrency:** two layers — the **outer `userMutex`** serializes same-user op chains
-(and is TryLock-skipped by the reconciler), and the **inner `sendMu`** in `arb.Client`
-serializes all shared-reserve-key Arbitrum txs across the read-nonce→send→wait sequence
-(nonce safety).
-
-`internal/arb/client.go` is the Arbitrum client (`TransferUSDC`, `SendETH`,
-`DepositToBridge` = a plain ERC20 transfer to the bridge, `WaitForUSDCBalance`). `sendTx`
-holds `sendMu`, doubles the suggested gas price and pads the gas estimate +25% (both
-surplus refunded on Arbitrum), and signs via `keys.SignLegacyTx(tx, chainID, from)` — so
-the reserve *or* a user *or* a TEE key can send Arbitrum txs through the same path.
-
-`internal/arb/permit.go` implements `batchedDepositWithPermit` (EIP-2612 gasless deposits)
-— **shelved (C2): the contract isn't deployed on Bridge2**, and skipped entries make a
-mined receipt non-authoritative. The production path uses the per-user reserve-fronted
-flow instead.
-
----
-
-## 7. Reconciliation
-
-The ledger drifts from real HL equity from (a) late deposit credits (a deposit that timed
-out in `waitForHLCredit` but credited afterward), (b) trading P&amp;L, and (c) the ~1 USDC
-`withdraw3` fee. `internal/extension/reconcile.go` realigns it.
-
-`Reconcile(user)`: `TryLock` the user mutex — **skip if busy** (an in-flight op owns it;
-the next tick catches it — this is the race-safety core). Compute `delta = realHLEquity -
-ledgerBalance`; if `|delta| ≤ ReconcileToleranceUSD` (0.01) leave it; positive →
-`Credit`, negative → `Adjust` (clamps at 0). `ReconcileAll` snapshots the user set and
-reconciles each. `startReconciler` ticks every `ReconcileIntervalSeconds` (default 120s),
-started only by the production `New` in bridge mode. `hlTotalUSD` = perp account value +
-spot USDC, robust to whether a bridge deposit is reported on the perp or spot side.
-
----
-
-## 8. The Flare→Arbitrum leg (Stargate + swap)
-
-Two client packages implement the front of the pipeline. **Both are proven in isolation but
-not yet imported by any non-test code** — today's production deposit assumes the reserve is
-already funded on Arbitrum, and `refillReserve` tops it up from the reserve's *HL* balance
-(withdraw3), not from Flare.
-
-- **`internal/stargate/client.go`** — a Stargate V2 (LayerZero OFT) client. One `IOFT`
-  surface covers both the Arbitrum native-USDC pool and the Flare `StargateOFTUSDC` (which
-  burns USDC.e). `QuoteSend` (two-step `quoteOFT` + `quoteSend` so the returned fee matches
-  the exact `Send`), `Send` (approve + **taxi mode** — empty `oftCmd` = immediate single
-  message), `WaitForBalance` (observe the async cross-chain delivery). Testnet↔mainnet is
-  config-only; mainnet delivers **native USDC — exactly the token Bridge2 takes**.
-- **`internal/swap/client.go`** — a Uniswap-V3-style exact-in swap client supporting
-  **both router shapes**: `RouterClassic` (original `SwapRouter`, `exactInputSingle`
-  *with* deadline — the **SparkDEX** shape) and `Router02` (no deadline). `QuoteExactIn`
-  (QuoterV2) derives `minOut`; `SwapExactIn` approves + swaps. SparkDEX's verified mainnet
-  addresses (classic router, QuoterV2, WFLR) are recorded in `.env.example` and
-  [`STATUS.md`](STATUS.md).
-
-Conceptually: Flare asset → (SparkDEX swap) → USDC.e → (Stargate OFT) → native USDC in the
-Arbitrum reserve → (Bridge2) → HL. Withdraw reverses it.
-
----
-
-## 9. Key custody in depth (C9 / PMW)
-
-In **tee-wallet** mode the extension never holds a user's private key. Instead:
-
-- Each user maps to a provisioned **(walletID, keyID)** in a registry
-  (`internal/keys/registry.go`, a JSON file written by the provisioning tool).
-- `TeeWalletKeyer.UserSigner(user)` looks up the pair, resolves the address once from
-  `GET /key-info/{walletID}/{keyID}` (a 64-byte X‖Y pubkey → `keccak256(X‖Y)[12:]`), and
-  returns a `teeWalletSigner`.
-- `teeWalletSigner.SignPreimage` does `POST /sign/{walletID}/{keyID}` with
-  `{"message":"<base64 preimage>"}`; the enclave applies keccak256, signs, and returns
-  `{"signature":"<base64 65-byte [R‖S‖V]>"}`.
-
-**Provisioning** (`tools/cmd/provision-wallet`) makes an enclave-sealed key actually exist,
-via the on-chain wallet lifecycle against the diamond (each step gated by a letter of
-`-command`, default `pwactkfe`):
-
-1. **CreateProject**(extensionID, EVM key type, EVM sign algo) → projectID
-2. **CreateWallet**(projectID) → walletID
-3. **SetAdmins** + each admin **ConfirmAdmin** (admins are separate EOAs; the tool
-   gas-funds them first, default 0.5 native each) — a **k-of-n admin *restore* threshold**
-   (default 2-of-3)
-4. **CloseWalletInitialization** (freeze config)
-5. **SetMultisigThreshold(1)** — the **cosigner** threshold (how many TEEs co-sign; 1 for
-   a single-TEE wallet — distinct from the admin threshold above)
-6. **AddKey**(teeID, walletID) → keyID (the enclave generates the key; instruction payment
-   required)
-7. **KeyProof** (poll the proxy `/wallet/{walletID}/{keyID}` for the enclave's 65-byte
-   existence proof) → **ConfirmKey** on-chain
-8. **EnableWallet**
-
-Then it derives the HL address from the on-chain public key and writes the registry entry.
-
-**Multi-machine** (replicate a key A→B so both nodes derive the same HL address): a second
-TEE node (**node B**) was stood up and registered to production on Coston, but the actual
-replication tooling (machine-path governance + `DirectBackup`/`DirectRestore`) is
-**deferred** — see the multi-machine memory note and [`STATUS.md`](STATUS.md).
-
----
-
-## 10. The operator tools
-
-Under `tools/` (module `extension-scaffold/tools`):
-
-- **`tools/pkg/support`** — `Support` struct with every TEE facet binding wired to the one
-  `FlareTeeManager` diamond, plus `Prv` (deployer key from `DEPLOYMENT_PRIVATE_KEY`),
-  `ChainID`, `ChainClient`, and `CheckTx` (waits + decodes revert reasons).
-- **`tools/pkg/fccutils`** — the on-chain call wrappers: `wallet.go` (the wallet-lifecycle
-  txs + `GetProxyWalletKeyInfo`/`KeyProof`), `registration.go` (the resumable TEE-node
-  registration state machine), revert decoding.
-- **`tools/cmd/provision-wallet`** — the 8-step wallet provisioning above.
-- **`tools/cmd/register-tee`** — registers a running node's machine on-chain and drives it
-  to production: `r` PreRegistration (`MachineManager.Register`), `R` fresh attestation,
-  `a` FDC availability check, `p` `ToProduction`. (Requires the node's proxy publicly
-  reachable so Flare's FDC/data-providers can attest it.)
-- **`tools/cmd/run-test`** — the on-chain e2e driver (C8): sends DEPOSIT→PERP→SPOT→WITHDRAW
-  instructions through the real stack and verifies each against HL. Flags include
-  `-depositUsd`/`-withdrawUsd` (added for bridge-mode dust runs) and a widened result-poll
-  window (a bridge DEPOSIT can block up to 4 min).
-- **`docker-compose*.yaml`** — the base stack (`redis`, `ext-proxy`, `extension-tee`) with
-  Coston/Coston2 overlays; `docker-compose.bridge.yaml` overlays bridge-mode env;
-  `docker-compose.nodeb.yaml` is the second-node stack.
-
----
-
-## 11. Configuration reference
-
-Loaded in `internal/config/config.go` (`LoadHLConfig` enforces the required secrets;
-`LoadArbConfig` is all-optional and also reads the key-custody vars).
-
-| Env var | Default | Meaning |
-|---|---|---|
-| `HYPERLIQUID_URL` | testnet API | HL API base (selects the signing domain) |
-| `HL_MASTER_SEED` | — (**required**) | ≥32-byte seed for per-user key derivation |
-| `HL_TREASURY_KEY` | — (**required**) | treasury HL key; also the default Arb reserve key |
-| `HL_MAX_DEPOSIT_USD` / `HL_MAX_TOTAL_DEPOSIT_USD` | 1000 / 5000 | deposit caps |
-| `HL_FUNDING_MODE` | `treasury` | `treasury` \| `bridge` |
-| `HL_KEY_MODE` | `seed` | `seed` \| `tee-wallet` |
-| `HL_SIGN_URL` | `http://127.0.0.1:7701` | tee-node sign server (`/sign`, `/key-info`) |
-| `HL_WALLET_REGISTRY` | `./config/wallet-registry.json` | user→(walletID,keyID) map |
-| `ARBITRUM_RPC_URL` | Arb Sepolia | Arbitrum RPC |
-| `ARB_USDC_ADDRESS` / `HL_BRIDGE2_ADDRESS` | HL-testnet defaults | bridge token + Bridge2 |
-| `ARB_RESERVE_KEY` | falls back to `HL_TREASURY_KEY` | TEE Arbitrum reserve key |
-| `HL_MIN_DEPOSIT_USD` | 5.0 | Bridge2 minimum (sub-min deposits are lost) |
-| `HL_RESERVE_AUTO_REFILL` / `HL_RESERVE_REFILL_FLOOR_USD` | false / 50 | reserve top-up from HL |
-| `HL_RECONCILE_TOLERANCE_USD` / `HL_RECONCILE_INTERVAL_SECONDS` | 0.01 / 120 | reconciler (0 = off) |
-| `EXTENSION_PORT` / `SIGN_PORT` / `TYPES_SERVER_PORT` | 8080 / 9090 / 8100 | ports |
-
-Tooling: `DEPLOYMENT_PRIVATE_KEY` (deployer/owner; falls back to a Hardhat dev key if
-unset — a footgun on real networks), `HL_WALLET_ADMIN_KEYS` (the 2-of-3 admin keys for
-provisioning). The `.env` mainnet profile (verified addresses) is staged in `.env.example`.
-
----
-
-## 12. Testing
-
-Five categories. **🟢** offline/CI-safe · **🟡** needs a local node/fork, zero real funds ·
-**🔴** needs funded keys + live network. Two build tags gate the non-offline tests:
-`hltestnet` (live + fork) and `integration` (on-chain contract tests). Live tests
-`t.Skip` cleanly when their env var is absent, so tagged runs still compile offline.
-
-### Unit (🟢, no tag) — the proof layer
-
-- **Signing byte-equality** (the crown jewels): `internal/keys/signer_test.go` (`rawSigner
-  == crypto.Sign`; `SignLegacyTx == types.SignTx`; `EIP712Preimage == apitypes` digest),
-  `internal/keys/teewallet_test.go` (`teeWalletSigner == rawSigner` over an `httptest`
-  mock of the enclave sign server — **the core custody proof**),
-  `internal/hl/hlsign/hlsign_test.go` (`hlsign.SignL1Action`/`SignUserAction` == upstream
-  `go-hyperliquid`, both nets), `internal/hl/signerexchange_test.go` (`floatToWire`
-  vectors + order-action signing), `internal/keys/derive_test.go`.
-- **Ledger:** `internal/ledger/ledger_test.go` (credit/debit/overdraft/cancel).
-- **Handlers vs fakes** (`fakeArb` + `hl.FakeAccount`):
-  `internal/extension/processors_test.go` (treasury deposit/order-with-sweep/cancel/
-  withdraw), `internal/extension/bridge_test.go` (reserve-funded deposits, no-gas-stranded
-  on failure, credit-timeout leaves ledger un-credited, unified-once, no-sweep in unified,
-  **20-way concurrent deposits**), `internal/extension/reconcile_test.go` (late credit /
-  P&amp;L / fee / clamp / tolerance / skip-busy / all).
-- **ABI-selector pins** (catch tuple/field drift offline): `internal/stargate/client_test.go`,
-  `internal/swap/client_test.go`.
-- **Envelope / config:** `pkg/types/types_test.go`, `internal/config/config_test.go`.
-- **Tooling** (deploy-hardening): `tools/pkg/{fccutils,support,validate,hlinfo}` unit tests
-  (revert decoding, registration state I/O, verify-deploy checks, HL `/info` client).
-
-### Live (🔴, `hltestnet`)
-
-- **`TestBridgeHandlersLive`** (`internal/extension/bridge_live_test.go`) — the
-  consolidated Phase-1 gate: 9 ordered subtests (deposit → unified → perp → limit+cancel →
-  spot+cancel → withdraw → close → **reconcile** → drain) over Arb Sepolia + HL testnet.
-- **`TestBridgeMultiUserLive`** — 3 users deposit+drain in parallel (reserve nonce
-  serialization + per-user isolation). **C7.**
-- **`TestTeeWalletOrderLive`** (`internal/hl/teewallet_live_test.go`) — **the C9 e2e**: a
-  TEE-sealed key (test holds no private key) signs `SetAbstraction` + a resting limit
-  order + cancel, all accepted by HL. Reaches the in-container sign server via a `socat`
-  sidecar.
-- **`TestArbHLLoop`** (`testing/arb_loop_test.go`) — the whole Arb Sepolia↔HL loop, C1.
-- **`TestStargateBridgeLive`** — C11, exact quoted delivery on a real testnet OFT pair.
-- Various treasury-mode / adapter / diagnostic tests in `testing/`.
-
-### Fork (🟡, `hltestnet`) — `TestSwapForkArbitrumOne`
-
-Proves the swap client on an **anvil fork of Arbitrum One** (real V3 bytecode + liquidity,
-zero real funds; self-funds via `anvil_*` cheatcodes), both router shapes, `received ==
-quote`. **C12.** Start `anvil --fork-url https://arb1.arbitrum.io/rpc` first.
-
-### Integration (🟡, `integration`) — `tools/integration/`
-
-On-chain tests of the deploy path (constructor validation, `setExtensionId` errors,
-`CheckTx` revert decoding, idempotent registration, pre-flight checks) against a local
-Hardhat/Anvil or Coston2.
-
-### On-chain e2e (🔴) — `tools/cmd/run-test`
-
-Drives DEPOSIT→PERP→SPOT→WITHDRAW through the real Flare stack (on-chain InstructionSender →
-data-provider relay → TEE proxy → extension → HL). **C8.**
-
-### Run mechanics (this repo)
-
-Go here needs the **sandbox disabled** and `GOCACHE=$TMPDIR/hype-gocache` (the sandbox
-blocks the build cache and macOS TLS). **Never** `go mod tidy` / `go get` — the module
-`replace`s point at pinned June-era `tee-node`/`tee-proxy` worktrees.
-
-```bash
-# UNIT (offline)
-GOCACHE=$TMPDIR/hype-gocache go test ./internal/...        # + ./pkg/... ; and (cd tools && go test ./...)
-# LIVE Phase-1 gate + multi-user
-HL_TREASURY_KEY=... go test -tags hltestnet ./internal/extension/ -run 'TestBridgeHandlersLive|TestBridgeMultiUserLive' -v -timeout 40m
-# LIVE tee-wallet C9 (enclave sign server published at HL_SIGN_URL + provisioned registry)
-HL_TREASURY_KEY=... HL_SIGN_URL=http://127.0.0.1:7701 HL_WALLET_REGISTRY=config/wallet-registry.json go test -tags hltestnet ./internal/hl/ -run TestTeeWalletOrderLive -v
-# FORK swap (terminal 1: anvil --fork-url https://arb1.arbitrum.io/rpc)
-go test -tags hltestnet ./testing/ -run TestSwapForkArbitrumOne -v
-# INTEGRATION (tools module, live EVM node)
-cd tools && go test -tags integration ./integration/ -v -count=1
-# ON-CHAIN E2E (stack up via ./scripts/start-services.sh --chain coston; ./scripts/post-build.sh once)
-cd tools && go run ./cmd/run-test -a ../config/coston/deployed-addresses.json -c "$CHAIN_URL" -p "$EXT_PROXY_URL" --instructionSender "$INSTRUCTION_SENDER" --hlUrl https://api.hyperliquid-testnet.xyz
+```json
+{
+  "action": {
+    "type": "order",
+    "orders": [{ "a": 4, "b": true, "p": "3000", "s": "0.5", "r": false,
+                 "t": { "limit": { "tif": "Gtc" } } }],
+    "grouping": "na"
+  },
+  "nonce": 1720000000123,
+  "signature": { "r": "0x…", "s": "0x…", "v": 27 }
+}
 ```
 
----
-
-## 13. Component status (C1–C12)
-
-Full detail + receipts in [`STATUS.md`](STATUS.md). Summary:
-
-| C | Component | Status | Proven by |
-|---|---|---|---|
-| C1 | Bridge2 deposit / perp / withdraw3 | 🟢 live | `TestArbHLLoop`, `TestBridgeHandlersLive` |
-| C2 | `batchedDepositWithPermit` | 🚫 blocked | not deployed on Bridge2 |
-| C3 | Spot + leverage + cancel | 🟢 live | `TestBridgeHandlersLive` |
-| C4 | Unified account mode | 🟢 live | `TestBridgeHandlersLive/unified`, `TestTeeWalletOrderLive` |
-| C5 | Handlers + `/action` surface | 🟢 live | handlers + the C8 e2e |
-| C6 | Ledger + reconciliation | 🟢 live | `reconcile_test.go`, `TestBridgeHandlersLive/reconcile` |
-| C7 | Multi-user / concurrency | 🟢 live | `TestBridgeMultiUserLive` |
-| C8 | On-chain instruction path | 🟢 live (Coston, treasury) | `run-test` |
-| C9 | PMW / tee-wallet custody | 🟢 single-node closed; multi-machine deferred | `TestTeeWalletOrderLive` |
-| C10 | Arb One ↔ HL mainnet loop | ⏳ mainnet dust | same code as C1 |
-| C11 | Stargate bridge client | 🟢 client live | `TestStargateBridgeLive` |
-| C12 | Swap client | 🟢 client (fork) | `TestSwapForkArbitrumOne` |
-
-**Known open items:** C9 multi-machine replication (tooling unbuilt); bridge-mode **on-chain**
-wiring (blocked at the data-provider relay to a freshly re-registered node — the deposit
-handlers themselves are proven); the Flare→Arb legs (Stargate/swap) not yet wired into the
-production handler; and mainnet (needs a Flare-mainnet deployment + real funds).
+A few system-level truths hide in there: **nonces are strictly-increasing timestamps** (so
+replays and out-of-order posts are rejected); **prices/sizes are formatted to HL's exact
+precision rules** (the string `"3000"`, not `3000.0` — because the signature covers the
+formatted bytes); a **market order** is just an aggressively-priced immediate-or-cancel order
+so it fills now, while a **limit order** rests. None of this differs between seed and
+TEE-wallet mode — only where the signature comes from.
 
 ---
 
-## 14. Design decisions & subtleties
+## 6. How money moves: the funding path
 
-1. **Preimage-not-digest** is the linchpin: the enclave re-hashes, so the `Signer` takes
-   pre-hash bytes — making raw/seed/TEE keys interchangeable and byte-identical. Proven,
-   not assumed (§3, §12).
-2. **`SignLegacyTx` verifies the preimage** against go-ethereum's own tx hash before
-   signing — a wrong preimage fails loudly.
-3. **Vendored, pinned go-hyperliquid primitives** (`@v0.33.1`): `convertStr16ToStr8` +
-   unsorted msgpack keys + compact ints make Go's msgpack match Python's; any drift
-   silently breaks signatures — hence the byte-equality tests.
-4. **`sanitizedSpotMeta` is load-bearing** — without it, `NewExchange`'s own testnet
-   spotMeta fetch indexes past the tokens slice and panics.
-5. **`readOnlyKeyHex` decouples reads from custody** — a throwaway key builds the
-   read-only `Exchange`; writes go through the real (TEE) signer.
-6. **Deposits land in perp/Core; unified-after-first-credit** — HL rejects `SetAbstraction`
-   on a never-deposited account, so it runs after the first credit (a live finding).
-7. **The ~1 USDC withdraw3 fee** and **late deposit credits** are absorbed by
-   reconciliation, not by the handlers — which is why the handler leaves the ledger
-   untouched on a credit timeout (no double-credit on retry).
-8. **Sub-min deposits (&lt;5 USD) are rejected upstream** — HL won't credit them and the
-   funds are unrecoverable.
-9. **Two-layer concurrency:** per-user mutex (serialize op chains, TryLock-skipped by the
-   reconciler) + reserve `sendMu` (serialize shared-key Arbitrum nonces).
-10. **Ephemeral node identity:** a TEE node's `teeID` is its enclave pubkey, regenerated on
-    some restarts (observed to change when the proxy is recreated, stable on a node-only
-    restart) — a change orphans the on-chain registration and in-enclave keys and needs
-    re-registration.
-11. **`HL_KEY_MODE`/`funding` wiring caveat:** tee-wallet custody + the background
-    reconciler are activated only on the bridge branch of the production `New`.
-12. **Stargate/swap clients are proven but not yet integrated** into the production funding
-    handler.
+Depositing to Hyperliquid isn't an HL API call — HL settles real deposits and withdrawals on
+**Arbitrum**, through its Bridge2 contract. So "put $50 into my HL account" really means "get
+$50 of USDC onto Arbitrum, at an address HL will credit to me, and hand it to Bridge2." That
+reality shapes the whole design.
+
+### The Arbitrum reserve, and why it exists
+
+The system holds a **TEE-controlled reserve on Arbitrum** — USDC plus a little gas — that
+**fronts** every user's deposit. The reserve exists because of one Bridge2 quirk: **it
+credits the address that *sent* the USDC.** So the reserve can't deposit on a user's behalf
+directly; it must first move USDC (and gas dust) to the user's *own* Arbitrum address, and
+*that* address deposits — so HL credits the user, not the reserve. Withdrawals flow back into
+the reserve, so it's a **recycling float hub**, not a balance that only drains.
+
+### A deposit, end to end
+
+```mermaid
+sequenceDiagram
+  participant EX as Extension
+  participant R as Reserve (Arbitrum)
+  participant UA as User's Arb address
+  participant B2 as Bridge2
+  participant HL as Hyperliquid
+  EX->>R: reserve covers the amount? (else fail — nothing spent yet)
+  R->>UA: send gas dust + deposit USDC
+  UA->>B2: deposit USDC (Bridge2 credits the sender = the user)
+  B2-->>HL: settle (~1 min)
+  EX->>HL: poll until the credit actually lands
+  EX->>EX: only now credit the ledger; switch to unified (first deposit only)
+```
+
+The **ordering is the safety property** — money is never committed before it's certain to be
+recoverable:
+
+```
+1. ensure reserve covers it        (fail here → nothing has moved)
+2. top up the user's gas
+3. move USDC to the user's address
+4. deposit to Bridge2, then WAIT for the real HL credit
+5. if it never credits → fail, and DON'T touch the ledger
+      (a late credit is reconciled later, §7 — never double-counted on retry)
+6. credit the ledger; on the first-ever deposit, switch the account to "unified" mode
+```
+
+Step 6's "unified" switch merges HL's separate spot and perp balances into one collateral
+pool, so a single deposit backs any kind of trade. It has to happen *after* the first deposit
+— HL rejects the switch on an account that has never been funded (a lesson learned live).
+
+A **withdrawal** is the mirror image: debit the books first, tell HL to `withdraw3` to the
+reserve's Arbitrum address (a few minutes, minus a small fixed fee), and refund the books if
+HL rejects it.
+
+### The Flare front of the pipeline
+
+The reserve holds USDC on Arbitrum, but the user's money starts on **Flare**. Bridging it is
+two hops:
+
+```mermaid
+flowchart LR
+  FA["Flare asset"] -->|"SparkDEX swap"| UE["USDC.e (Flare)"]
+  UE -->|"Stargate OFT bridge"| NU["native USDC (Arbitrum)"]
+  NU --> RES["TEE reserve"]
+  RES -->|"Bridge2"| HL["Hyperliquid"]
+  style FA fill:#eef
+  style HL fill:#efe
+```
+
+Both hops — a **swap** (on SparkDEX, a Uniswap-V3-style DEX on Flare) into a bridgeable
+stablecoin, then a **Stargate/LayerZero** bridge that delivers *native* USDC (exactly what
+Bridge2 accepts) — have **built and tested client code**, but are **not yet wired into the
+live deposit handler.** Today the reserve is assumed pre-funded on Arbitrum and tops itself up
+from its own HL balance when low. Finishing this front-of-pipeline is part of the mainnet
+work.
+
+### Two funding modes
+
+- **Bridge mode** — the real path above: genuine Bridge2 deposits/withdrawals with the
+  reserve.
+- **Treasury mode** — a simpler legacy path for testing: deposits/withdrawals are just
+  HL-internal transfers to/from a shared treasury account, sidestepping Arbitrum entirely.
+  Convenient for exercising the trading logic; not how real funds should flow.
+
+### Many users, one reserve — safely
+
+Because one reserve key funds many users and a user may have several operations in flight,
+the system serializes on two levels:
+
+```
+per-user lock   → one user's operations run one at a time   (balance + nonce consistency)
+reserve lock    → all reserve spends are serialized           (shared-key nonce safety)
+```
+
+Under a burst of concurrent deposits, each is handled cleanly and independently — and the
+reconciler (§7) deliberately *skips* a user who currently holds their lock, so background
+bookkeeping never collides with an in-flight operation.
 
 ---
 
-*Generated from a full read of the codebase (`internal/`, `pkg/`, `tools/`, tests) on
-2026-07-09. For the live status and receipts, always cross-check [`STATUS.md`](STATUS.md).*
+## 7. Keeping honest books
+
+The extension keeps a lightweight **in-memory ledger** of each user's balance — fast, and
+handy for answering "what's my balance" and enforcing caps. But the *truth* is on
+Hyperliquid, and the two drift: deposits can credit late, trading moves P&L, every withdrawal
+costs a fee. Left alone, the ledger would slowly diverge from reality.
+
+So a **background reconciler** periodically realigns each user's ledger to their real HL
+equity. The logic is small, and its safety is in what it *skips*:
+
+```
+for each user:
+    if the user is mid-operation (holds their lock):  skip — catch them next round
+    delta = realHLEquity(user) − ledgerBalance(user)
+    if |delta| ≤ tolerance:  leave it        (float dust — ignore)
+    else:                    fold delta into the ledger   (late credit, P&L, or fee)
+```
+
+The ledger is best understood as a **cache of HL's truth**, never an independent source of
+it — which is exactly why the deposit handler refuses to credit on a timed-out deposit and
+lets reconciliation pick up a late credit instead, so nothing is ever double-counted.
+
+---
+
+## 8. Bringing a TEE wallet into existence
+
+In TEE-wallet mode a user's key isn't conjured on demand — it is **provisioned** through
+Flare's on-chain wallet machinery, which is also where **governance and recovery** live:
+
+```mermaid
+flowchart LR
+  P["create project<br/>(under the extension)"] --> W["create wallet"]
+  W --> A["attach admins + threshold<br/>(e.g. 2-of-3, for recovery)"]
+  A --> C["close init (freeze config)"]
+  C --> G["enclave generates the key"]
+  G --> PR["enclave publishes an existence proof"]
+  PR --> CF["confirm proof on-chain → enable"]
+  CF --> REG["record user → wallet in the registry;<br/>derive the HL address"]
+```
+
+The important design point isn't the steps — it's that a TEE-sealed trading key comes with an
+**on-chain governance and recovery model baked in**, separate from the enclave that happens to
+hold it. The **admins** don't trade; they're the **quorum that can recover the key** if a
+machine is lost (so the key is durable, not tied to one fragile enclave). The enclave
+generates the key and publishes a **proof that it exists**, which is confirmed on-chain before
+the wallet is usable.
+
+**Multiple machines.** For resilience you want the *same* key usable on more than one TEE
+machine — so any node can serve a user, and a lost node doesn't strand funds. The mechanism
+exists (a key can be securely replicated enclave-to-enclave, authorized by governance) and a
+second node has been stood up and registered; wiring the replication itself is **deferred**
+(see [`STATUS.md`](STATUS.md)). One subtlety worth knowing: a node's identity *is* its enclave
+key, which can change if the enclave restarts — so a replaced node must be re-registered, and
+keys are always bound to a specific, currently-attested node.
+
+---
+
+## 9. What's proven, what's open
+
+Full detail and receipts in [`STATUS.md`](STATUS.md); the one-line version:
+
+- **Working and tested on testnet:** deposits, trading (spot + perp, market + limit,
+  leverage, cancel), withdrawals; real Arbitrum Bridge2 settlement; the unified-account and
+  ledger/reconciliation machinery; many concurrent users; the full on-chain instruction path;
+  and — the headline — a **TEE-sealed key signing real Hyperliquid orders that HL accepted,
+  with the extension never holding the key.**
+- **The Flare→Arbitrum bridging hops** (swap + Stargate) are proven as clients but **not yet
+  wired into the live deposit path.**
+- **Deferred:** replicating a key across multiple TEE machines.
+- **Blocked externally:** a gasless "batched deposit" optimization that depends on a
+  Hyperliquid contract that isn't deployed.
+- **Not yet done:** **mainnet** — a real-funds deployment of already-proven code plus a
+  Flare-mainnet deployment of the contracts, not new design.
+
+---
+
+## 10. Design principles
+
+The recurring ideas behind the decisions above:
+
+1. **Custody is a routing decision, not a code path.** Reduce "signing" to "sign these exact
+   bytes," and a key can be in-process or sealed in an enclave with the rest of the system
+   none the wiser — proven byte-for-byte, not assumed.
+2. **Verify before you trust a signature.** Reconstruct what you mean to sign and check it; a
+   wrong preimage should fail loudly, never silently sign the wrong thing.
+3. **Trust the code, not the operator.** Attestation + on-chain code-hash registration make
+   the thing holding funds provably the reviewed build; consensus-relayed on-chain
+   instructions mean no one can unilaterally move a user's money.
+4. **Reality is on Hyperliquid; the ledger is a cache.** Never let the local book become an
+   independent source of truth — reconcile it to the exchange, carefully, forever.
+5. **Fail before you commit funds.** Check the reserve before spending gas; wait for the real
+   credit before crediting the book; refund on failure. No operation should ever strand money
+   halfway.
+6. **Match the counterparty exactly.** Hyperliquid's signing and encoding are unforgiving —
+   reproduce them to the byte and pin the versions; drift is a silent outage.
+7. **Testnet → mainnet is a config swap, not a rewrite.** Modes, addresses, and endpoints are
+   configuration; the same code runs against test and real networks.
+
+---
+
+## Appendix: the knobs & the code map
+
+### The knobs that matter
+
+Two configuration switches define the *shape* of the system:
+
+- **`HL_KEY_MODE`** — `seed` (derive keys in-process) vs `tee-wallet` (keys sealed in the
+  enclave). The **custody** axis.
+- **`HL_FUNDING_MODE`** — `treasury` (HL-internal transfers, for testing) vs `bridge` (real
+  Arbitrum Bridge2 settlement, with the reserve). The **money-movement** axis.
+
+The rest are operational: which HL/Arbitrum endpoints, the master seed and reserve key,
+deposit caps/minimums, the reconciler cadence/tolerance, and the provisioning admin keys. Full
+names/defaults live in the config source and in `.env.example`, which also carries the verified
+**mainnet** addresses.
+
+### Code map (concept → where it lives)
+
+| Concept | Where |
+|---|---|
+| The key-agnostic `Signer` & per-user derivation | `internal/keys` |
+| Hyperliquid account, orders, reads | `internal/hl` |
+| Reproduced HL signing (the two action families) | `internal/hl/hlsign` |
+| Instruction handling, funding modes, the reserve, concurrency | `internal/extension` |
+| The off-chain ledger & reconciliation | `internal/ledger`, `internal/extension` |
+| Arbitrum client & Bridge2 | `internal/arb` |
+| Flare→Arbitrum bridging & swapping (built, not yet wired in) | `internal/stargate`, `internal/swap` |
+| Configuration | `internal/config` |
+| Provisioning, node registration, the on-chain e2e driver | `tools/` |
+
+### Testing philosophy
+
+The test strategy mirrors the trust model. The **signing equivalences are proven as unit
+tests** — that a sealed key and a local key produce identical bytes, and that our HL signing
+matches the reference implementation exactly — because those equalities are the foundation
+everything rests on. The **behavioral logic** (deposits crediting correctly, failures never
+stranding funds, reconciliation converging, many users in parallel) is tested against fakes
+offline, then **re-proven live** against HL testnet and Arbitrum Sepolia. The **swap leg**,
+whose real liquidity is hard to get on testnet, is proven against a *fork* of Arbitrum
+mainnet. The **full on-chain path** is exercised end-to-end through the real Flare stack. The
+guiding rule: anything that could silently be wrong (a signature encoding, a fund-movement
+edge case) gets a test that would loudly fail if it were. See [`STATUS.md`](STATUS.md) for the
+component-by-component map and the commands to run each layer.
+
+---
+
+*Systems architecture overview, 2026-07-09. For live status, receipts, and exact component
+states, cross-check [`STATUS.md`](STATUS.md).*
