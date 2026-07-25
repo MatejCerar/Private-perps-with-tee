@@ -13,10 +13,11 @@ const (
 
 	OPTypeHL = "HL"
 
-	OPCommandDeposit    = "DEPOSIT"
-	OPCommandPlaceOrder = "PLACE_ORDER"
-	OPCommandCancel     = "CANCEL"
-	OPCommandWithdraw   = "WITHDRAW"
+	OPCommandDeposit        = "DEPOSIT"
+	OPCommandPlaceOrder     = "PLACE_ORDER"
+	OPCommandCancel         = "CANCEL"
+	OPCommandWithdraw       = "WITHDRAW"
+	OPCommandConfirmFunding = "CONFIRM_FUNDING"
 
 	TimeoutShutdown = 5 * time.Second
 )
@@ -60,9 +61,25 @@ var (
 )
 
 // FundingMode selects how DEPOSIT/WITHDRAW move funds: "treasury" (legacy
-// spotSend from a shared HL treasury) or "bridge" (real Arbitrum Bridge2
-// deposit + withdraw3). Defaults to "treasury" for backward compatibility.
+// spotSend from a shared HL treasury), "bridge" (real per-wallet Arbitrum Bridge2
+// deposit + withdraw3), or "vault" (Coston TestUSDC vault front + central Bridge2
+// to the treasury + spotSend to users; the Coston↔Arbitrum hop is skipped).
+// Defaults to "treasury" for backward compatibility.
 var FundingMode = "treasury"
+
+// Vault-mode settings (populated by LoadArbConfig).
+var (
+	// VaultAddress is the Coston Vault contract that escrows deposited TestUSDC.
+	VaultAddress string
+	// VaultAuthorityKeyHex signs the withdrawal slips the Vault verifies. Defaults
+	// to HL_TREASURY_KEY (the vault's setTeeAuthority is set to this key's address).
+	VaultAuthorityKeyHex string
+	// Bridge2Mock skips the real Arbitrum↔HL Bridge2 legs (deposit + withdraw3) and
+	// funds users straight from the pre-funded treasury via spotSend. Defaults to
+	// true so the full round-trip works without a funded Arbitrum Sepolia reserve;
+	// set HL_BRIDGE2_MOCK=false once the reserve holds testnet USDC + gas.
+	Bridge2Mock = true
+)
 
 // KeyMode selects HL account key custody: "seed" (per-user keys derived from
 // HL_MASTER_SEED, in-process) or "tee-wallet" (keys sealed in the TEE, reached
@@ -129,6 +146,16 @@ func LoadArbConfig() {
 	if v := os.Getenv("HL_RECONCILE_INTERVAL_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			ReconcileIntervalSeconds = n
+		}
+	}
+	// vault-mode settings
+	VaultAddress = os.Getenv("VAULT_ADDRESS")
+	if VaultAuthorityKeyHex = os.Getenv("HL_VAULT_AUTHORITY_KEY"); VaultAuthorityKeyHex == "" {
+		VaultAuthorityKeyHex = os.Getenv("HL_TREASURY_KEY")
+	}
+	if v := os.Getenv("HL_BRIDGE2_MOCK"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			Bridge2Mock = b
 		}
 	}
 }

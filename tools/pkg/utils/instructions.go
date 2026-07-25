@@ -22,6 +22,8 @@ func DeployInstructionSender(s *support.Support) (common.Address, *hyperliquid.H
 		return common.Address{}, nil, errors.Errorf("failed to create transactor: %s", err)
 	}
 
+	opts.GasLimit = 3_000_000 // Coston2 gas estimation underestimates code storage cost
+
 	// Both registry args are the FlareTeeManager diamond proxy: the diamond
 	// routes ExtensionManager and MachineManager calls to the right facets.
 	address, tx, contract, err := hyperliquid.DeployHyperliquidInstructionSender(
@@ -102,21 +104,21 @@ func SetExtensionId(s *support.Support, instructionSenderAddress common.Address)
 	return nil
 }
 
-func sendHL(
-	s *support.Support,
-	instructionSenderAddress common.Address,
-	call func(opts *bind.TransactOpts, payload []byte) (*types.Transaction, error),
-	payload []byte,
-) (common.Hash, common.Hash, error) {
+// feeOpts builds a transactor that forwards the registry instruction fee.
+func feeOpts(s *support.Support) (*bind.TransactOpts, error) {
 	opts, err := bind.NewKeyedTransactorWithChainID(s.Prv, s.ChainID)
 	if err != nil {
-		return common.Hash{}, common.Hash{}, errors.Errorf("failed to create transactor: %s", err)
+		return nil, errors.Errorf("failed to create transactor: %s", err)
 	}
 	opts.Value = big.NewInt(1000000) // instruction fee in wei — must match registry's required fee
+	return opts, nil
+}
 
-	tx, err := call(opts, payload)
-	if err != nil {
-		return common.Hash{}, common.Hash{}, errors.Errorf("failed to send instruction: %s", err)
+// finalize waits for the instruction tx, checks status, and extracts the
+// instructionId from the TeeInstructionsSent event.
+func finalize(s *support.Support, tx *types.Transaction, sendErr error) (common.Hash, common.Hash, error) {
+	if sendErr != nil {
+		return common.Hash{}, common.Hash{}, errors.Errorf("failed to send instruction: %s", sendErr)
 	}
 	receipt, err := bind.WaitMined(context.Background(), s.ChainClient, tx)
 	if err != nil {
@@ -139,12 +141,54 @@ func bindSender(s *support.Support, addr common.Address) (*hyperliquid.Hyperliqu
 	return hyperliquid.NewHyperliquidInstructionSender(addr, s.ChainClient)
 }
 
-func SendDeposit(s *support.Support, addr common.Address, payload []byte) (common.Hash, common.Hash, error) {
+// SetVault wires the Coston Vault into the InstructionSender (one-shot, post-deploy).
+func SetVault(s *support.Support, addr, vault common.Address) error {
+	c, err := bindSender(s, addr)
+	if err != nil {
+		return err
+	}
+	opts, err := bind.NewKeyedTransactorWithChainID(s.Prv, s.ChainID)
+	if err != nil {
+		return errors.Errorf("failed to create transactor: %s", err)
+	}
+	tx, err := c.SetVault(opts, vault)
+	if err != nil {
+		return errors.Errorf("failed to call setVault: %s", err)
+	}
+	receipt, err := bind.WaitMined(context.Background(), s.ChainClient, tx)
+	if err != nil {
+		return errors.Errorf("failed waiting for setVault: %s", err)
+	}
+	if receipt.Status != 1 {
+		return errors.New("setVault transaction failed")
+	}
+	return nil
+}
+
+func SendDeposit(s *support.Support, addr, token common.Address, amount *big.Int) (common.Hash, common.Hash, error) {
 	c, err := bindSender(s, addr)
 	if err != nil {
 		return common.Hash{}, common.Hash{}, err
 	}
-	return sendHL(s, addr, c.Deposit, payload)
+	opts, err := feeOpts(s)
+	if err != nil {
+		return common.Hash{}, common.Hash{}, err
+	}
+	tx, err := c.Deposit(opts, token, amount)
+	return finalize(s, tx, err)
+}
+
+func SendRequestWithdraw(s *support.Support, addr, token common.Address, amount *big.Int) (common.Hash, common.Hash, error) {
+	c, err := bindSender(s, addr)
+	if err != nil {
+		return common.Hash{}, common.Hash{}, err
+	}
+	opts, err := feeOpts(s)
+	if err != nil {
+		return common.Hash{}, common.Hash{}, err
+	}
+	tx, err := c.RequestWithdraw(opts, token, amount)
+	return finalize(s, tx, err)
 }
 
 func SendPlaceOrder(s *support.Support, addr common.Address, payload []byte) (common.Hash, common.Hash, error) {
@@ -152,7 +196,12 @@ func SendPlaceOrder(s *support.Support, addr common.Address, payload []byte) (co
 	if err != nil {
 		return common.Hash{}, common.Hash{}, err
 	}
-	return sendHL(s, addr, c.PlaceOrder, payload)
+	opts, err := feeOpts(s)
+	if err != nil {
+		return common.Hash{}, common.Hash{}, err
+	}
+	tx, err := c.PlaceOrder(opts, payload)
+	return finalize(s, tx, err)
 }
 
 func SendCancel(s *support.Support, addr common.Address, payload []byte) (common.Hash, common.Hash, error) {
@@ -160,13 +209,77 @@ func SendCancel(s *support.Support, addr common.Address, payload []byte) (common
 	if err != nil {
 		return common.Hash{}, common.Hash{}, err
 	}
-	return sendHL(s, addr, c.Cancel, payload)
+	opts, err := feeOpts(s)
+	if err != nil {
+		return common.Hash{}, common.Hash{}, err
+	}
+	tx, err := c.Cancel(opts, payload)
+	return finalize(s, tx, err)
 }
 
-func SendWithdraw(s *support.Support, addr common.Address, payload []byte) (common.Hash, common.Hash, error) {
+// SetSponsoredLimit sets a user's sponsored funding limit on the InstructionSender
+// (owner-only). The limit is in token units (6 decimals for TestUSDC). Zero
+// revokes sponsorship; non-zero lets the treasury fund deposits up to this
+// cumulative limit. Example: 5000e6 = $5,000.
+func SetSponsoredLimit(s *support.Support, addr, user common.Address, limit *big.Int) error {
+	c, err := bindSender(s, addr)
+	if err != nil {
+		return err
+	}
+	opts, err := bind.NewKeyedTransactorWithChainID(s.Prv, s.ChainID)
+	if err != nil {
+		return errors.Errorf("failed to create transactor: %s", err)
+	}
+	tx, err := c.SetSponsoredLimit(opts, user, limit)
+	if err != nil {
+		return errors.Errorf("failed to call setSponsoredLimit: %s", err)
+	}
+	receipt, err := bind.WaitMined(context.Background(), s.ChainClient, tx)
+	if err != nil {
+		return errors.Errorf("failed waiting for setSponsoredLimit: %s", err)
+	}
+	if receipt.Status != 1 {
+		return errors.New("setSponsoredLimit transaction failed")
+	}
+	return nil
+}
+
+// SendConfirmFunding sends a CONFIRM_FUNDING instruction after a self-fund user
+// has funded their HL address. The TEE verifies the HL balance and credits the ledger.
+func SendConfirmFunding(s *support.Support, addr, token common.Address, amount *big.Int) (common.Hash, common.Hash, error) {
 	c, err := bindSender(s, addr)
 	if err != nil {
 		return common.Hash{}, common.Hash{}, err
 	}
-	return sendHL(s, addr, c.Withdraw, payload)
+	opts, err := feeOpts(s)
+	if err != nil {
+		return common.Hash{}, common.Hash{}, err
+	}
+	tx, err := c.ConfirmFunding(opts, token, amount)
+	return finalize(s, tx, err)
+}
+
+// SetAdmin grants or revokes admin status on the InstructionSender (owner-only).
+// Admins can call setSponsoredLimit to manage the funding allowlist.
+func SetAdmin(s *support.Support, addr, admin common.Address, status bool) error {
+	c, err := bindSender(s, addr)
+	if err != nil {
+		return err
+	}
+	opts, err := bind.NewKeyedTransactorWithChainID(s.Prv, s.ChainID)
+	if err != nil {
+		return errors.Errorf("failed to create transactor: %s", err)
+	}
+	tx, err := c.SetAdmin(opts, admin, status)
+	if err != nil {
+		return errors.Errorf("failed to call setAdmin: %s", err)
+	}
+	receipt, err := bind.WaitMined(context.Background(), s.ChainClient, tx)
+	if err != nil {
+		return errors.Errorf("failed waiting for setAdmin: %s", err)
+	}
+	if receipt.Status != 1 {
+		return errors.New("setAdmin transaction failed")
+	}
+	return nil
 }

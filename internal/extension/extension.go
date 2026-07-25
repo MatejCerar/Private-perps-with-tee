@@ -62,6 +62,13 @@ type Extension struct {
 	bridgeAddr    common.Address
 	reserveHL     hl.Account // reserve's HL account, for auto-refilling Arbitrum USDC via withdraw3
 
+	// vault-mode funding (Coston TestUSDC vault + central Bridge2 + spotSend).
+	// In this mode `treasury` is the reserve's HL account (one key funds Bridge2 on
+	// Arbitrum and spotSends on HL). `bridge2Mock` skips the real Arbitrum legs.
+	vaultAddr   common.Address
+	vaultAuthKey *ecdsa.PrivateKey
+	bridge2Mock bool
+
 	accounts map[common.Address]hl.Account // cache: flare addr -> HL account
 
 	// userLocks serializes per-user ops (one in-flight deposit/withdraw/order
@@ -137,6 +144,37 @@ func New(extensionPort, signPort int) *Extension {
 		e := apply(NewWithBridge(extensionPort, signPort, factory, seed, ac, reserveKey,
 			common.HexToAddress(config.ArbUSDCAddress), common.HexToAddress(config.HLBridge2Address)))
 		e.startReconciler()
+		return e
+	}
+
+	if config.FundingMode == "vault" {
+		ac, err := arb.New(context.Background(), config.ArbitrumRPCURL)
+		if err != nil {
+			panic(fmt.Sprintf("arbitrum client: %v", err))
+		}
+		reserveKey, err := crypto.HexToECDSA(config.ArbReserveKeyHex)
+		if err != nil {
+			panic(fmt.Sprintf("reserve key: %v", err))
+		}
+		authKey, err := crypto.HexToECDSA(config.VaultAuthorityKeyHex)
+		if err != nil {
+			panic(fmt.Sprintf("vault authority key: %v", err))
+		}
+		e := apply(NewWithBridge(extensionPort, signPort, factory, seed, ac, reserveKey,
+			common.HexToAddress(config.ArbUSDCAddress), common.HexToAddress(config.HLBridge2Address)))
+		e.fundingMode = "vault"
+		// The reserve's HL account IS the treasury: one key funds Bridge2 on
+		// Arbitrum and spotSends to users on HL.
+		e.treasury = e.reserveHL
+		e.treasuryAddr = e.reserveAddr.Hex()
+		e.vaultAddr = common.HexToAddress(config.VaultAddress)
+		e.vaultAuthKey = authKey
+		e.bridge2Mock = config.Bridge2Mock
+		// Standard mode so the treasury can spotSend (unified disables transfers).
+		if err := e.treasury.SetAbstraction(context.Background(), hl.AbstractionStandard); err != nil {
+			logger.Warnf("treasury SetAbstraction(standard): %v (ensure treasury is flat and standard)", err)
+		}
+		logger.Infof("HL funding mode: vault (bridge2Mock=%v, vault=%s)", e.bridge2Mock, e.vaultAddr.Hex())
 		return e
 	}
 
@@ -304,6 +342,8 @@ func (e *Extension) processAction(action teetypes.Action) (int, []byte) {
 		return e.handleAsync(action, df, e.processCancel)
 	case df.OPCommand == teeutils.ToHash(config.OPCommandWithdraw):
 		return e.handleAsync(action, df, e.processWithdraw)
+	case df.OPCommand == teeutils.ToHash(config.OPCommandConfirmFunding):
+		return e.handleAsync(action, df, e.processConfirmFunding)
 	default:
 		return http.StatusNotImplemented, []byte(fmt.Sprintf("unsupported op command: %s", df.OPCommand.Hex()))
 	}

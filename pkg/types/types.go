@@ -71,6 +71,12 @@ type WithdrawRequest struct {
 type DepositResponse struct {
 	HLAddress  string  `json:"hlAddress"`
 	BalanceUsd float64 `json:"balanceUsd"`
+
+	// Self-fund fields (present when the depositor is not sponsored): the user
+	// must fund this HL address themselves (HL testnet faucet or Arbitrum bridge),
+	// then call confirmFunding(token, amount) on the InstructionSender.
+	SelfFund        bool   `json:"selfFund,omitempty"`
+	SelfFundAddress string `json:"selfFundAddress,omitempty"`
 }
 
 type OrderResponse struct {
@@ -84,6 +90,21 @@ type CancelResponse struct {
 }
 
 type WithdrawResponse struct {
+	BalanceUsd float64 `json:"balanceUsd"`
+
+	// Vault withdrawal slip (present in "vault" funding mode): the user submits
+	// these to Vault.executeWithdraw(user, token, amount, withdrawalId, signature)
+	// on Coston to release the escrowed TestUSDC.
+	Vault        string `json:"vault,omitempty"`
+	User         string `json:"user,omitempty"`
+	Token        string `json:"token,omitempty"`
+	Amount       string `json:"amount,omitempty"`       // token units (decimal string)
+	WithdrawalId string `json:"withdrawalId,omitempty"` // 0x-prefixed bytes32
+	Signature    string `json:"signature,omitempty"`    // 0x-prefixed 65-byte EIP-191 sig
+}
+
+type ConfirmFundingResponse struct {
+	HLAddress  string  `json:"hlAddress"`
 	BalanceUsd float64 `json:"balanceUsd"`
 }
 

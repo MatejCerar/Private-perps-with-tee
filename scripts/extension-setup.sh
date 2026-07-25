@@ -42,11 +42,53 @@ if [[ -f "$PROJECT_DIR/config/extension.env" ]]; then
     source "$PROJECT_DIR/config/extension.env"
 fi
 
+# Resolve ADDRESSES_FILE to an absolute path so it survives the cd into tools/
+if [[ -n "${ADDRESSES_FILE:-}" && "$ADDRESSES_FILE" != /* ]]; then
+    ADDRESSES_FILE="$PROJECT_DIR/$ADDRESSES_FILE"
+fi
+
 log "EXTENSION_ID:       ${EXTENSION_ID:-<not set>}"
 log "INSTRUCTION_SENDER: ${INSTRUCTION_SENDER:-<not set>}"
 log "CHAIN_URL:          ${CHAIN_URL:-<not set>}"
 
-# --- Add your extension-specific setup below ---
-# The Hello World scaffold has no extra setup. Replace this with your own logic.
+# --- Vault-mode funding: deploy TestUSDC + Vault, wire them, and write the
+#     vault-mode config the extension container reads at startup (env_file:
+#     config/extension.env). Only runs when HL_FUNDING_MODE=vault.
+if [[ "${HL_FUNDING_MODE:-treasury}" == "vault" ]]; then
+    [[ -n "${INSTRUCTION_SENDER:-}" ]] || { echo "INSTRUCTION_SENDER not set (pre-build must run first)"; exit 1; }
 
-log "No extension-specific setup needed (Hello World scaffold)."
+    log "Deploying TestUSDC + Vault and wiring the InstructionSender (setVault)..."
+    cd "$PROJECT_DIR/tools"
+    DEPLOY_OUT=$(go run ./cmd/deploy-vault \
+        -a "${ADDRESSES_FILE:-./config/coston/deployed-addresses.json}" \
+        -c "${CHAIN_URL:-https://coston-api.flare.network/ext/C/rpc}" \
+        -instructionSender "$INSTRUCTION_SENDER")
+    echo "$DEPLOY_OUT"
+    cd "$PROJECT_DIR"
+
+    TESTUSDC_ADDRESS=$(echo "$DEPLOY_OUT" | grep -E '^TESTUSDC_ADDRESS=' | cut -d= -f2)
+    VAULT_ADDRESS=$(echo "$DEPLOY_OUT" | grep -E '^VAULT_ADDRESS=' | cut -d= -f2)
+    [[ -n "$VAULT_ADDRESS" && -n "$TESTUSDC_ADDRESS" ]] || { echo "deploy-vault did not return addresses"; exit 1; }
+
+    # The container reads config/extension.env wholesale (docker-compose env_file).
+    # HL_VAULT_AUTHORITY_KEY / ARB_RESERVE_KEY default to HL_TREASURY_KEY in the Go
+    # config, and the Arbitrum addresses have Arb-Sepolia / HL-testnet defaults, so
+    # only these four vars need writing here.
+    cat >> "$PROJECT_DIR/config/extension.env" <<EOF
+HL_FUNDING_MODE=vault
+TESTUSDC_ADDRESS=$TESTUSDC_ADDRESS
+VAULT_ADDRESS=$VAULT_ADDRESS
+HL_BRIDGE2_MOCK=${HL_BRIDGE2_MOCK:-true}
+EOF
+
+    log "Vault mode wired: TestUSDC=$TESTUSDC_ADDRESS Vault=$VAULT_ADDRESS bridge2Mock=${HL_BRIDGE2_MOCK:-true}"
+    log ""
+    log "Frontend — set these in frontend/.env.local, then \`cd frontend && npm run dev\`:"
+    log "  NEXT_PUBLIC_CHAIN=<coston|coston2, matching this setup>"
+    log "  NEXT_PUBLIC_INSTRUCTION_SENDER=$INSTRUCTION_SENDER"
+    log "  NEXT_PUBLIC_TESTUSDC=$TESTUSDC_ADDRESS"
+    log "  NEXT_PUBLIC_VAULT=$VAULT_ADDRESS"
+    log "  TEE_PROXY_URL=${EXT_PROXY_URL:-<your ext-proxy public url>}"
+else
+    log "HL_FUNDING_MODE is '${HL_FUNDING_MODE:-treasury}' (not 'vault') — skipping vault deploy."
+fi

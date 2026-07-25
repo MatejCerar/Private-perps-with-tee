@@ -18,7 +18,9 @@ services:
       # Coston chain id. The node binds every signature to this value; it must
       # match the proxy's chain_id and the on-chain registry, or signature
       # verification fails (InvalidTeePublicKeyOrSignature / proxy panic).
-      - CHAIN_ID=${CHAIN_ID:-16}
+      - CHAIN_ID=${CHAIN_ID:-114}
+      - GOVERNANCE_SIGNERS=${GOVERNANCE_SIGNERS:-${INITIAL_OWNER:-0xF4E021377420Afe90c1A7D2b8968904946633a64}}
+      - GOVERNANCE_THRESHOLD=${GOVERNANCE_THRESHOLD:-1}
 
 networks:
   default:

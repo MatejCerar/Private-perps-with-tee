@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
 	"github.com/flare-foundation/go-flare-common/pkg/tee/instruction"
@@ -76,12 +77,39 @@ func (e *Extension) handleAsync(action teetypes.Action, df *instruction.DataFixe
 
 	go func(a teetypes.Action, d *instruction.DataFixed) {
 		result := processor(a, d)
-		if err := sendResult(e.signPort, result); err != nil {
-			logger.Errorf("posting result %s: %v", result.ID, err)
+		if err := sendResultWithRetry(e.signPort, result); err != nil {
+			logger.Errorf("posting result %s (all retries exhausted): %v", result.ID, err)
 		}
 	}(action, df)
 
 	return http.StatusOK, pending
+}
+
+const (
+	resultMaxRetries = 8
+	resultBaseDelay  = 1 * time.Second
+	resultMaxDelay   = 30 * time.Second
+)
+
+func sendResultWithRetry(nodePort int, ar teetypes.ActionResult) error {
+	var lastErr error
+	delay := resultBaseDelay
+	for attempt := 0; attempt <= resultMaxRetries; attempt++ {
+		if attempt > 0 {
+			logger.Warnf("retrying result delivery %s (attempt %d/%d) in %v", ar.ID, attempt, resultMaxRetries, delay)
+			time.Sleep(delay)
+			delay *= 2
+			if delay > resultMaxDelay {
+				delay = resultMaxDelay
+			}
+		}
+		lastErr = sendResult(nodePort, ar)
+		if lastErr == nil {
+			return nil
+		}
+		logger.Warnf("result delivery %s attempt %d failed: %v", ar.ID, attempt, lastErr)
+	}
+	return lastErr
 }
 
 func sendResult(nodePort int, ar teetypes.ActionResult) error {

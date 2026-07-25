@@ -18,6 +18,10 @@ tools/allow-*
 tools/deploy-*
 tools/register-*
 tools/run-*
+tools/spot-send
+
+# Playwright MCP artifacts
+.playwright-mcp/
 
 # Generated contract bindings (produced by scripts/generate-bindings.sh)
 tools/pkg/contracts/*/autogen.go

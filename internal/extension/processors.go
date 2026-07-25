@@ -18,6 +18,9 @@ func (e *Extension) processDeposit(a teetypes.Action, df *instruction.DataFixed)
 	if e.fundingMode == "bridge" {
 		return e.processDepositBridge(a, df)
 	}
+	if e.fundingMode == "vault" {
+		return e.processDepositVault(a, df)
+	}
 	user, payload, err := types.DecodeEnvelope(df.OriginalMessage)
 	if err != nil {
 		return buildResult(a, df, nil, 0, err)
@@ -175,6 +178,9 @@ func (e *Extension) processCancel(a teetypes.Action, df *instruction.DataFixed) 
 func (e *Extension) processWithdraw(a teetypes.Action, df *instruction.DataFixed) teetypes.ActionResult {
 	if e.fundingMode == "bridge" {
 		return e.processWithdrawBridge(a, df)
+	}
+	if e.fundingMode == "vault" {
+		return e.processWithdrawVault(a, df)
 	}
 	user, payload, err := types.DecodeEnvelope(df.OriginalMessage)
 	if err != nil {

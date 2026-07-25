@@ -13,6 +13,9 @@ services:
       - ./config/proxy/extension_proxy.docker.toml:/app/config/config.toml:ro
     environment:
       - PROXY_PRIVATE_KEY=${PROXY_PRIVATE_KEY:-983760a4ebf75b2ac3a93531168a0f225d01e5dc6e3568adbd46233ba1fb4fa4}
+      # Forwarded from .env; required by the proxy only when [direct] is enabled
+      # in its config. Empty default is a no-op when [direct] is disabled.
+      - DIRECT_API_KEY=${DIRECT_API_KEY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
@@ -51,8 +54,11 @@ services:
       - HYPERLIQUID_URL=${HYPERLIQUID_URL:-https://api.hyperliquid-testnet.xyz}
       - HL_MASTER_SEED=${HL_MASTER_SEED}
       - HL_TREASURY_KEY=${HL_TREASURY_KEY}
+      - HL_FUNDING_MODE=${HL_FUNDING_MODE:-treasury}
       - HL_MAX_DEPOSIT_USD=${HL_MAX_DEPOSIT_USD:-1000}
       - HL_MAX_TOTAL_DEPOSIT_USD=${HL_MAX_TOTAL_DEPOSIT_USD:-5000}
+      - VAULT_ADDRESS=${VAULT_ADDRESS:-}
+      - TESTUSDC_ADDRESS=${TESTUSDC_ADDRESS:-}
     depends_on:
       - ext-proxy
 

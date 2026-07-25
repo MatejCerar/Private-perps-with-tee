@@ -25,7 +25,13 @@ type depositResult struct {
 }
 
 type withdrawResult struct {
-	BalanceUsd float64 `json:"balanceUsd"`
+	BalanceUsd   float64 `json:"balanceUsd"`
+	Vault        string  `json:"vault"`
+	User         string  `json:"user"`
+	Token        string  `json:"token"`
+	Amount       string  `json:"amount"`
+	WithdrawalId string  `json:"withdrawalId"`
+	Signature    string  `json:"signature"`
 }
 
 func main() {
@@ -37,6 +43,8 @@ func main() {
 	treasuryf := flag.String("treasury", "", "treasury HL address for a pre-send preflight (optional)")
 	depositf := flag.Float64("depositUsd", 100, "DEPOSIT amount (USD); lower for bridge mode within the reserve's Arbitrum USDC")
 	withdrawf := flag.Float64("withdrawUsd", 20, "WITHDRAW amount (USD)")
+	testUSDCf := flag.String("testUSDC", envOr("TESTUSDC_ADDRESS", ""), "TestUSDC token address (vault mode)")
+	vaultf := flag.String("vault", envOr("VAULT_ADDRESS", ""), "Vault contract address (vault mode)")
 	flag.Parse()
 
 	instructionSenderAddress := common.HexToAddress(*instructionSenderF)
@@ -80,10 +88,16 @@ func main() {
 		logger.Infof("treasury preflight ok: spot USDC %.2f, no open positions", bal)
 	}
 
-	// --- Step 1: DEPOSIT -----------------------------------------------------
+	// --- Step 1: DEPOSIT (mint TestUSDC → approve → escrow to vault) ---------
+	token := common.HexToAddress(*testUSDCf)
+	vaultAddr := common.HexToAddress(*vaultf)
+	depUnits := usdToUnits(*depositf)
+	logger.Infof("Minting + approving %.2f TestUSDC (%s)...", *depositf, token.Hex())
+	if err := mintAndApprove(testSupport, token, instructionSenderAddress, depUnits); err != nil {
+		fccutils.FatalWithCause(err)
+	}
 	logger.Infof("Sending DEPOSIT instruction...")
-	depPayload, _ := json.Marshal(map[string]any{"usdAmount": *depositf})
-	depID, _, err := instrutils.SendDeposit(testSupport, instructionSenderAddress, depPayload)
+	depID, _, err := instrutils.SendDeposit(testSupport, instructionSenderAddress, token, depUnits)
 	if err != nil {
 		fccutils.FatalWithCause(err)
 	}
@@ -184,9 +198,8 @@ func main() {
 	logger.Infof("spot order accepted: %s", string(spotResp.Result.Data))
 
 	// --- Step 4: WITHDRAW ----------------------------------------------------
-	logger.Infof("Sending WITHDRAW instruction...")
-	wdPayload, _ := json.Marshal(map[string]any{"usdAmount": *withdrawf})
-	wdID, _, err := instrutils.SendWithdraw(testSupport, instructionSenderAddress, wdPayload)
+	logger.Infof("Sending WITHDRAW (requestWithdraw) instruction...")
+	wdID, _, err := instrutils.SendRequestWithdraw(testSupport, instructionSenderAddress, token, usdToUnits(*withdrawf))
 	if err != nil {
 		fccutils.FatalWithCause(err)
 	}
@@ -204,10 +217,15 @@ func main() {
 	if err := json.Unmarshal(wdResp.Result.Data, &wd); err != nil {
 		fccutils.FatalWithCause(errors.Errorf("parsing withdraw response: %s", err))
 	}
-	if wd.BalanceUsd != dep.BalanceUsd-20 {
-		fccutils.FatalWithCause(errors.Errorf("expected balance %.2f after withdraw, got %.2f", dep.BalanceUsd-20, wd.BalanceUsd))
+	// Release the escrowed TestUSDC on Coston with the TEE-signed slip.
+	logger.Infof("Executing vault withdrawal (releasing TestUSDC via slip)...")
+	if err := executeVaultWithdraw(testSupport, vaultAddr, wd); err != nil {
+		fccutils.FatalWithCause(errors.Errorf("executeWithdraw on vault: %s", err))
 	}
-	logger.Infof("verified ledger balance after withdraw: %.2f", wd.BalanceUsd)
+	if wd.BalanceUsd != dep.BalanceUsd-*withdrawf {
+		fccutils.FatalWithCause(errors.Errorf("expected balance %.2f after withdraw, got %.2f", dep.BalanceUsd-*withdrawf, wd.BalanceUsd))
+	}
+	logger.Infof("verified ledger balance after withdraw: %.2f; TestUSDC released on Coston", wd.BalanceUsd)
 
 	logger.Infof("All tests passed.")
 }

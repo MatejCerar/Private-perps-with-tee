@@ -3,14 +3,17 @@ package main
 import (
 	"flag"
 	"fmt"
+	"strings"
 
 	"extension-scaffold/tools/pkg/configs"
 	"extension-scaffold/tools/pkg/fccutils"
 	"extension-scaffold/tools/pkg/support"
+	instrutils "extension-scaffold/tools/pkg/utils"
 	"extension-scaffold/tools/pkg/validate"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
+	"github.com/pkg/errors"
 )
 
 func main() {
@@ -45,6 +48,19 @@ func main() {
 
 	if extensionID == nil || extensionID.Sign() <= 0 {
 		logger.Warnf("WARNING: extension ID is %v — verify this is expected", extensionID)
+	}
+
+	// Cache the extension ID on the InstructionSender contract so it can send
+	// instructions (setExtensionId reads the registry to find the assigned ID).
+	// Idempotent: a contract that already has its ID set is left unchanged.
+	logger.Infof("Setting extension ID on InstructionSender contract...")
+	if err := instrutils.SetExtensionId(testSupport, instructionSenderAddress); err != nil {
+		if strings.Contains(err.Error(), "already set") {
+			logger.Infof("Extension ID already set on contract, continuing")
+		} else {
+			fccutils.FatalWithCause(errors.Errorf(
+				"setExtensionId failed — is the extension registered? Error: %s", err))
+		}
 	}
 
 	extensionIDHex := fmt.Sprintf("0x%064x", extensionID)
