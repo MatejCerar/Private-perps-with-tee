@@ -14,6 +14,7 @@ import { stringToHex } from "viem";
 import { instructionSenderAbi, testUsdcAbi, vaultAbi } from "@/lib/abi";
 import {
   activeChain,
+  hlExplorerAddress,
   INSTRUCTION_FEE_WEI,
   INSTRUCTION_SENDER,
   INSTRUCTION_SENDER_OK,
@@ -664,6 +665,7 @@ export default function Home() {
               available={available}
               inPositions={inPositions}
               everDeposited={everDeposited}
+              hlAddress={hlAddress}
               positions={account?.positions ?? []}
               orders={account?.openOrders ?? []}
               mids={mids}
@@ -697,6 +699,7 @@ export default function Home() {
       {run && (
         <StatusToast
           run={run}
+          hlExplorerUrl={hlAddress ? hlExplorerAddress(hlAddress) : undefined}
           onToggleDetails={() => setRun((s) => (s ? { ...s, detailsOpen: !s.detailsOpen } : s))}
           onDismiss={() => setRun(null)}
         />

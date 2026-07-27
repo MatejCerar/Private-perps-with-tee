@@ -2,6 +2,7 @@
 
 import { css, C, usd, price, sizeFmt } from "@/lib/ui";
 import { marketBy } from "@/lib/markets";
+import { hlExplorerAddress } from "@/lib/config";
 import type { HlPosition, HlOrder } from "@/lib/hl";
 
 export function AccountColumn(props: {
@@ -9,6 +10,7 @@ export function AccountColumn(props: {
   available: number;
   inPositions: number;
   everDeposited: boolean;
+  hlAddress?: string;
   positions: HlPosition[];
   orders: HlOrder[];
   mids: Record<string, number>;
@@ -35,13 +37,25 @@ export function AccountColumn(props: {
           >
             Your money
           </span>
-          <span style={css("display:flex;align-items:center;gap:5px;font-size:10.5px;color:#6f7789;font-weight:600;")}>
-            <span
-              style={css(
-                "width:5px;height:5px;border-radius:50%;background:#2ece6f;animation:hypePulse 2s ease-in-out infinite;",
-              )}
-            />
-            Live
+          <span style={css("display:flex;align-items:center;gap:10px;")}>
+            {props.hlAddress && (
+              <a
+                href={hlExplorerAddress(props.hlAddress)}
+                target="_blank"
+                rel="noreferrer"
+                style={css("font-size:10.5px;font-weight:700;color:#8aa0ff;text-decoration:none;")}
+              >
+                View on HL ↗
+              </a>
+            )}
+            <span style={css("display:flex;align-items:center;gap:5px;font-size:10.5px;color:#6f7789;font-weight:600;")}>
+              <span
+                style={css(
+                  "width:5px;height:5px;border-radius:50%;background:#2ece6f;animation:hypePulse 2s ease-in-out infinite;",
+                )}
+              />
+              Live
+            </span>
           </span>
         </div>
         <div
@@ -107,10 +121,26 @@ export function AccountColumn(props: {
       >
         <div
           style={css(
-            "font-size:11px;color:#8a93a6;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:14px;",
+            "display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;",
           )}
         >
-          Positions
+          <span
+            style={css(
+              "font-size:11px;color:#8a93a6;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;",
+            )}
+          >
+            Positions
+          </span>
+          {props.hlAddress && (
+            <a
+              href={hlExplorerAddress(props.hlAddress)}
+              target="_blank"
+              rel="noreferrer"
+              style={css("font-size:10.5px;font-weight:700;color:#8aa0ff;text-decoration:none;")}
+            >
+              Explorer ↗
+            </a>
+          )}
         </div>
         {props.positions.length > 0 ? (
           <div style={css("display:flex;flex-direction:column;gap:10px;")}>

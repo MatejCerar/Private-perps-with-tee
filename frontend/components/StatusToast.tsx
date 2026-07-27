@@ -23,10 +23,12 @@ const BASE_STEPS = ["Sign in your wallet", "Confirming on Flare", "Executing on 
 
 export function StatusToast({
   run,
+  hlExplorerUrl,
   onToggleDetails,
   onDismiss,
 }: {
   run: RunState;
+  hlExplorerUrl?: string;
   onToggleDetails: () => void;
   onDismiss: () => void;
 }) {
@@ -88,7 +90,28 @@ export function StatusToast({
                 : "font-size:11.5px;color:#8a93a6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;",
             )}
           >
-            {done ? "Done" : error ? run.error || "Failed" : run.sub}
+            {done ? (
+              <>
+                Done
+                {hlExplorerUrl && (
+                  <>
+                    {" · "}
+                    <a
+                      href={hlExplorerUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={css("color:#8aa0ff;font-weight:700;text-decoration:none;")}
+                    >
+                      View on HL ↗
+                    </a>
+                  </>
+                )}
+              </>
+            ) : error ? (
+              run.error || "Failed"
+            ) : (
+              run.sub
+            )}
           </div>
         </div>
         {terminal && (
