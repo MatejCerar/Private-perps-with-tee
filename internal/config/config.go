@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -94,6 +95,37 @@ var SignURL = "http://127.0.0.1:7701"
 // wallet (walletID, keyID), written by tools/cmd/provision-wallet.
 var WalletRegistryPath = "./config/wallet-registry.json"
 
+// --- Private deposit (delayed, batched, fixed-denomination funding) ---
+//
+// The account model is unchanged (the per-user HL account is still seed-derived,
+// Y = HKDF(masterSeed, user); the master seed never leaves the TEE, so an outsider
+// cannot derive Y from the Flare address). What this adds is UNLINKABLE FUNDING:
+// instead of funding Y synchronously on the DEPOSIT instruction (which an observer
+// could correlate to the on-chain deposit by amount + time), the TEE escrows the
+// deposit and funds Y later, from the shared treasury, after a randomized delay,
+// batched with other deposits, in a fixed denomination. So no observer can match a
+// Flare deposit to the HL account that gets funded.
+var (
+	// PrivateDeposit turns the delayed/batched funding path on. Off by default so
+	// the original synchronous behaviour is preserved unless explicitly enabled.
+	PrivateDeposit = false
+
+	// Denominations are the only deposit amounts accepted when PrivateDeposit is on
+	// (USD). Uniform amounts stop an observer re-linking a user by matching the
+	// on-chain deposit amount to the HL funding amount. Empty disables the check.
+	Denominations = []float64{25, 100, 500}
+
+	// BatchMin is the minimum number of matured deposits funded together (the
+	// anonymity set). 1 = no anonymity; raise it for real privacy.
+	BatchMin = 1
+	// FundDelayMinSeconds/FundDelayMaxSeconds bound the randomized per-deposit delay
+	// before its HL account is funded, decorrelating funding from the deposit.
+	FundDelayMinSeconds = 20
+	FundDelayMaxSeconds = 60
+	// FundTickSeconds is how often the batch funder wakes to drain due deposits.
+	FundTickSeconds = 5
+)
+
 // LoadArbConfig reads Arbitrum-side settings for the bridge funding path.
 // Optional: the legacy treasury/spotSend deposit path does not use these.
 // ARB_RESERVE_KEY defaults to HL_TREASURY_KEY so the faucet-funded treasury can
@@ -158,6 +190,64 @@ func LoadArbConfig() {
 			Bridge2Mock = b
 		}
 	}
+	// private-deposit settings
+	if v := os.Getenv("HL_PRIVATE_DEPOSIT"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			PrivateDeposit = b
+		}
+	}
+	if v := os.Getenv("HL_DENOMINATIONS"); v != "" {
+		Denominations = parseFloatCSV(v)
+	}
+	if v := os.Getenv("HL_BATCH_MIN"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			BatchMin = n
+		}
+	}
+	if v := os.Getenv("HL_FUND_DELAY_MIN_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			FundDelayMinSeconds = n
+		}
+	}
+	if v := os.Getenv("HL_FUND_DELAY_MAX_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			FundDelayMaxSeconds = n
+		}
+	}
+	if v := os.Getenv("HL_FUND_TICK_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			FundTickSeconds = n
+		}
+	}
+}
+
+// parseFloatCSV parses "25,100,500" into []float64, skipping blanks/invalids.
+func parseFloatCSV(s string) []float64 {
+	var out []float64
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if f, err := strconv.ParseFloat(part, 64); err == nil && f > 0 {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// IsDenomination reports whether usd matches an allowed deposit denomination
+// (within a cent). Always true when no denominations are configured.
+func IsDenomination(usd float64) bool {
+	if len(Denominations) == 0 {
+		return true
+	}
+	for _, d := range Denominations {
+		if usd >= d-0.01 && usd <= d+0.01 {
+			return true
+		}
+	}
+	return false
 }
 
 // LoadHLConfig reads HL-specific settings from the environment.

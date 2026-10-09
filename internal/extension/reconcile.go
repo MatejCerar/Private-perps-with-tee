@@ -33,6 +33,22 @@ type ReconcileResult struct {
 //
 // Returns the applied delta (0 if in tolerance or skipped).
 func (e *Extension) Reconcile(ctx context.Context, user common.Address) (float64, error) {
+	// Private deposit: never reconcile a user whose deposit is in the pool awaiting
+	// delayed funding. The HL account may already hold the funds (funding in
+	// progress) while the ledger is intentionally not yet credited; crediting here
+	// would collapse the funding delay and re-link the user by timing. The batch
+	// funder is the sole authority that credits a pooled deposit.
+	if e.depositPool != nil && e.depositPool.InFlight(user) {
+		return 0, nil
+	}
+	// Same for a withdraw awaiting its delayed/batched HL reclaim: the ledger is
+	// already debited but the HL funds are still on the account until the payout
+	// batcher unwinds them; reconciling here would credit the gap back and undo the
+	// debit. The payout batcher is the sole authority for an in-flight withdraw.
+	if e.withdrawPool != nil && e.withdrawPool.InFlight(user) {
+		return 0, nil
+	}
+
 	mu := e.userMutex(user)
 	if !mu.TryLock() {
 		return 0, nil // busy: an in-flight op owns this user; next tick will catch it

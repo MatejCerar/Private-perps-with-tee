@@ -19,22 +19,29 @@ export function css(s: string): CSSProperties {
   return out as CSSProperties;
 }
 
-// Palette lifted from the design.
+// Palette aligned to the official Flare design system. Pink (#e62058) is the
+// single primary brand mark and accent; long=green / short=red use the Flare
+// semantic palette; surfaces are the Flare neutral blacks.
 export const C = {
-  bg: "#080a0f",
-  accent: "#7c8cff",
-  accentText: "#0b0d13",
-  green: "#2ece6f",
-  red: "#ff5d5f",
-  redSoft: "#ff8082",
-  text: "#e9ecf4",
-  amber: "#e3ad46",
-  amberText: "#e8c885",
-  m1: "#c8cede",
-  m2: "#9aa3b6",
-  m3: "#8a93a6",
-  m4: "#6f7789",
-  m5: "#5f6779",
+  bg: "#101010",
+  // Flare brand pink is both primary CTA and accent (unified, no coral).
+  accent: "#e62058",
+  accentText: "#ffffff",
+  // Flare brand pink scale (primary CTA / logo mark / active states).
+  brand: "#e62058",
+  brandSoft: "#f73c68",
+  brandSofter: "#fd6f8c",
+  green: "#61b854",
+  red: "#ee4c45",
+  redSoft: "#f2726c",
+  text: "#f6f6f6",
+  amber: "#fdac59",
+  amberText: "#fdac59",
+  m1: "#d1d1d1",
+  m2: "#a2a2a2",
+  m3: "#777777",
+  m4: "#414141",
+  m5: "#414141",
 } as const;
 
 // ---- formatters (mirror the design's num/usd/price/sizeFmt) ----

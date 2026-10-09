@@ -138,6 +138,12 @@ func (e *Extension) processDepositVault(a teetypes.Action, df *instruction.DataF
 		return buildResult(a, df, data, 1, nil)
 	}
 
+	// Private deposit: escrow for delayed, batched, uniform funding from the shared
+	// treasury (unlinkable) instead of funding synchronously.
+	if e.depositPool != nil {
+		return e.enqueuePrivateDeposit(a, df, user, acct, usd)
+	}
+
 	// Sponsored: treasury funds the user's HL account (existing flow).
 	if e.led.Total()+usd > config.MaxTotalDepositUSD {
 		return buildResult(a, df, nil, 0, fmt.Errorf("deposit exceeds global treasury cap"))

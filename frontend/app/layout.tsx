@@ -18,9 +18,9 @@ const jetbrains = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "hype-accounts — leveraged trading, as simple as a swap",
+  title: "Flare Perps - private leveraged trading on Flare",
   description:
-    "Go long or short on real Hyperliquid testnet markets with play money, through a secure TEE pipeline.",
+    "Go long or short on real Hyperliquid markets from your Flare wallet. Deposits are pooled for privacy and trades run inside a Flare TEE.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

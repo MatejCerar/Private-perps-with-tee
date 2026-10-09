@@ -9,6 +9,8 @@ export function TxModal(props: {
   withdrawable: number;
   maxDeposit: number;
   busy: boolean;
+  privacy: boolean;
+  denominations: number[];
   onAmount: (v: string) => void;
   onMax: () => void;
   onPick: (v: string) => void;
@@ -18,6 +20,11 @@ export function TxModal(props: {
   const isDep = props.kind === "deposit";
   const amt = num(props.amount);
   const room = Math.max(0, props.maxDeposit - props.balance);
+  // In privacy mode deposits are restricted to fixed denominations.
+  const fixedDenoms = isDep && props.privacy;
+  const depositChips = fixedDenoms
+    ? props.denominations.map((d) => String(d))
+    : ["25", "50", "100", "Max"];
 
   let errorText = "";
   if (isDep && props.balance + amt > props.maxDeposit)
@@ -28,20 +35,20 @@ export function TxModal(props: {
   const btnStyle =
     "width:100%;padding:14px;border-radius:13px;border:none;font-size:15px;font-weight:800;" +
     (valid
-      ? `background:${C.accent};color:#0b0d13;cursor:pointer;`
-      : "background:rgba(255,255,255,0.05);color:#5f6779;cursor:not-allowed;");
+      ? `background:${C.accent};color:#ffffff;cursor:pointer;`
+      : "background:rgba(255,255,255,0.05);color:#414141;cursor:not-allowed;");
 
   return (
     <div
       onClick={props.onClose}
       style={css(
-        "position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;padding:24px;background:rgba(4,6,10,0.66);backdrop-filter:blur(6px);animation:hypeRise 0.18s ease;",
+        "position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;padding:24px;background:rgba(16,16,16,0.66);backdrop-filter:blur(6px);animation:hypeRise 0.18s ease;",
       )}
     >
       <div
         onClick={(e) => e.stopPropagation()}
         style={css(
-          "width:100%;max-width:420px;border-radius:20px;border:1px solid rgba(255,255,255,0.1);background:linear-gradient(180deg,#141924,#0f131b);box-shadow:0 40px 90px -30px rgba(0,0,0,0.9);padding:22px;",
+          "width:100%;max-width:420px;border-radius:20px;border:1px solid rgba(255,255,255,0.1);background:linear-gradient(180deg,#232323,#1a1a1a);box-shadow:0 40px 90px -30px rgba(0,0,0,0.9);padding:22px;",
         )}
       >
         <div style={css("display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;")}>
@@ -51,15 +58,17 @@ export function TxModal(props: {
           <button
             onClick={props.onClose}
             style={css(
-              "width:30px;height:30px;border-radius:9px;border:1px solid rgba(255,255,255,0.1);background:transparent;color:#8a93a6;font-size:15px;cursor:pointer;",
+              "width:30px;height:30px;border-radius:9px;border:1px solid rgba(255,255,255,0.1);background:transparent;color:#777777;font-size:15px;cursor:pointer;",
             )}
           >
             ✕
           </button>
         </div>
-        <div style={css("font-size:12.5px;color:#8a93a6;line-height:1.5;margin-bottom:18px;")}>
+        <div style={css("font-size:12.5px;color:#777777;line-height:1.5;margin-bottom:18px;")}>
           {isDep
-            ? "Mints test USDC to your wallet, escrows it on Coston, then the treasury funds your Hyperliquid account. A couple of wallet signatures; ~15s. No real value."
+            ? fixedDenoms
+              ? "Mints test USDC to your wallet and escrows it on Coston. Your Hyperliquid account is then funded privately, batched with others on a short delay. No real value."
+              : "Mints test USDC to your wallet, escrows it on Coston, then the treasury funds your Hyperliquid account. A couple of wallet signatures; ~15s. No real value."
             : "Unwinds on Hyperliquid, then releases your test USDC back to your Coston wallet (request + release signatures)."}
         </div>
 
@@ -69,52 +78,77 @@ export function TxModal(props: {
           )}
         >
           <div style={css("display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;")}>
-            <span style={css("font-size:12px;color:#8a93a6;font-weight:600;")}>Amount</span>
-            <span style={css("font-size:11.5px;color:#6f7789;")}>
+            <span style={css("font-size:12px;color:#777777;font-weight:600;")}>Amount</span>
+            <span style={css("font-size:11.5px;color:#414141;")}>
               {isDep ? `Up to $${room.toFixed(0)} more` : `Withdrawable ${usd(props.withdrawable)}`}
             </span>
           </div>
           <div style={css("display:flex;align-items:center;gap:10px;")}>
-            <span style={css("font-size:26px;font-weight:800;color:#8a93a6;")}>$</span>
+            <span style={css("font-size:26px;font-weight:800;color:#777777;")}>$</span>
             <input
               value={props.amount}
               onChange={(e) => props.onAmount(e.target.value.replace(/[^0-9.]/g, ""))}
               inputMode="decimal"
               placeholder="0"
-              autoFocus
+              autoFocus={!fixedDenoms}
+              readOnly={fixedDenoms}
               style={css(
-                "flex:1;min-width:0;border:none;background:transparent;color:#e9ecf4;font-size:30px;font-weight:800;font-variant-numeric:tabular-nums;padding:0;",
+                "flex:1;min-width:0;border:none;background:transparent;color:#f6f6f6;font-size:30px;font-weight:800;font-variant-numeric:tabular-nums;padding:0;" +
+                  (fixedDenoms ? "cursor:default;" : ""),
               )}
             />
-            <button
-              onClick={props.onMax}
-              style={css(
-                "padding:5px 11px;border-radius:8px;border:1px solid rgba(124,140,255,0.3);background:rgba(124,140,255,0.1);color:#a7b6ff;font-size:11.5px;font-weight:800;cursor:pointer;",
-              )}
-            >
-              MAX
-            </button>
+            {!fixedDenoms && (
+              <button
+                onClick={props.onMax}
+                style={css(
+                  "padding:5px 11px;border-radius:8px;border:1px solid rgba(230,32,88,0.3);background:rgba(230,32,88,0.1);color:#fd6f8c;font-size:11.5px;font-weight:800;cursor:pointer;",
+                )}
+              >
+                MAX
+              </button>
+            )}
           </div>
         </div>
 
         {isDep && (
-          <div style={css("display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px;")}>
-            {["25", "50", "100", "Max"].map((v) => (
-              <button
-                key={v}
-                onClick={() => (v === "Max" ? props.onMax() : props.onPick(v))}
-                style={css(
-                  "padding:9px;border-radius:10px;font-size:12.5px;font-weight:800;cursor:pointer;border:1px solid rgba(255,255,255,0.09);background:rgba(255,255,255,0.03);color:#c8cede;",
-                )}
-              >
-                {v === "Max" ? "Max" : `$${v}`}
-              </button>
-            ))}
+          <div
+            style={css(
+              `display:grid;grid-template-columns:repeat(${depositChips.length},1fr);gap:8px;margin-bottom:${fixedDenoms ? "10" : "14"}px;`,
+            )}
+          >
+            {depositChips.map((v) => {
+              const selected = fixedDenoms && props.amount === v;
+              return (
+                <button
+                  key={v}
+                  onClick={() => (v === "Max" ? props.onMax() : props.onPick(v))}
+                  style={css(
+                    "padding:9px;border-radius:10px;font-size:12.5px;font-weight:800;cursor:pointer;" +
+                      (selected
+                        ? `border:1px solid ${C.accent};background:rgba(230,32,88,0.14);color:#ffccd5;`
+                        : "border:1px solid rgba(255,255,255,0.09);background:rgba(255,255,255,0.03);color:#d1d1d1;"),
+                  )}
+                >
+                  {v === "Max" ? "Max" : `$${v}`}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {fixedDenoms && (
+          <div
+            style={css(
+              "font-size:11.5px;color:#777777;line-height:1.5;margin-bottom:14px;",
+            )}
+          >
+            Private deposits use fixed amounts so your deposit blends into the batch. Pick one
+            above.
           </div>
         )}
 
         {errorText && (
-          <div style={css("font-size:12px;color:#ff8082;font-weight:600;margin-bottom:12px;")}>
+          <div style={css("font-size:12px;color:#f2726c;font-weight:600;margin-bottom:12px;")}>
             {errorText}
           </div>
         )}

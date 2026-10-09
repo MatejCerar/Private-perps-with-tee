@@ -10,6 +10,7 @@ import (
 	"extension-scaffold/internal/ledger"
 	"extension-scaffold/pkg/types"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/flare-foundation/go-flare-common/pkg/tee/instruction"
 	teetypes "github.com/flare-foundation/tee-node/pkg/types"
 )
@@ -43,12 +44,44 @@ func (e *Extension) processDeposit(a teetypes.Action, df *instruction.DataFixed)
 	if err != nil {
 		return buildResult(a, df, nil, 0, fmt.Errorf("deriving account: %w", err))
 	}
+	// Private deposit: escrow for delayed, batched, uniform funding from the shared
+	// treasury (unlinkable) instead of funding synchronously. The account is the
+	// same seed-derived one; only the funding timing/amount is decorrelated.
+	if e.depositPool != nil {
+		return e.enqueuePrivateDeposit(a, df, user, acct, req.UsdAmount)
+	}
 	if err := e.treasury.SendUSD(context.Background(), acct.Address(), req.UsdAmount); err != nil {
 		return buildResult(a, df, nil, 0, fmt.Errorf("funding from treasury: %w", err))
 	}
 	e.led.Credit(user, req.UsdAmount)
 
 	resp := types.DepositResponse{HLAddress: acct.Address(), BalanceUsd: e.led.Balance(user)}
+	data, _ := json.Marshal(resp)
+	return buildResult(a, df, data, 1, nil)
+}
+
+// enqueuePrivateDeposit is the delayed/batched funding path. It validates the fixed
+// denomination, enforces the pending-aware global cap, and escrows the deposit in
+// the pool. The background batch funder later funds the user's (seed-derived) HL
+// account from the shared treasury after a randomized delay, so no observer can
+// match the on-chain deposit to the HL account that gets funded. Returns a pending
+// response (BalanceUsd stays 0 until the batch credits).
+func (e *Extension) enqueuePrivateDeposit(a teetypes.Action, df *instruction.DataFixed, user common.Address, acct hl.Account, usd float64) teetypes.ActionResult {
+	if !config.IsDenomination(usd) {
+		return buildResult(a, df, nil, 0, fmt.Errorf("deposit %.2f is not an allowed denomination %v (private deposit requires fixed amounts so funding cannot be amount-correlated)", usd, config.Denominations))
+	}
+	if e.led.Total()+e.depositPool.PendingTotal()+usd > config.MaxTotalDepositUSD {
+		return buildResult(a, df, nil, 0, fmt.Errorf("deposit exceeds global cap"))
+	}
+	if !e.depositPool.Enqueue(user, usd) {
+		return buildResult(a, df, nil, 0, fmt.Errorf("a deposit is already being funded privately for this account; wait for it to complete before depositing again"))
+	}
+	est := int(e.depositPool.EstimatedDelay(user).Seconds())
+	resp := types.DepositResponse{
+		HLAddress:               acct.Address(),
+		PendingFunding:          true,
+		EstimatedFundingSeconds: est,
+	}
 	data, _ := json.Marshal(resp)
 	return buildResult(a, df, data, 1, nil)
 }
@@ -193,6 +226,11 @@ func (e *Extension) processWithdraw(a teetypes.Action, df *instruction.DataFixed
 	if req.UsdAmount <= 0 {
 		return buildResult(a, df, nil, 0, fmt.Errorf("usdAmount must be positive"))
 	}
+	// Private withdraw: debit now, then enqueue for a delayed, batched HL reclaim so
+	// the on-chain request and the HL unwind can't be correlated (mirror of deposit).
+	if e.withdrawPool != nil {
+		return e.enqueuePrivateWithdraw(a, df, user, req.UsdAmount)
+	}
 	if err := e.led.Debit(user, req.UsdAmount); err != nil {
 		return buildResult(a, df, nil, 0, err)
 	}
@@ -207,5 +245,31 @@ func (e *Extension) processWithdraw(a teetypes.Action, df *instruction.DataFixed
 		return buildResult(a, df, nil, 0, fmt.Errorf("returning to treasury: %w", err))
 	}
 	data, _ := json.Marshal(types.WithdrawResponse{BalanceUsd: e.led.Balance(user)})
+	return buildResult(a, df, data, 1, nil)
+}
+
+// enqueuePrivateWithdraw is the delayed/batched exit path. It validates the fixed
+// denomination, debits the ledger immediately (so the balance reflects it), and
+// enqueues the user for a later, batched HL reclaim to the treasury by the payout
+// batcher. Returns a pending response (BalanceUsd is the post-debit balance;
+// PendingPayout flags the "paid out privately in ~N" state). Refunds on reject.
+func (e *Extension) enqueuePrivateWithdraw(a teetypes.Action, df *instruction.DataFixed, user common.Address, usd float64) teetypes.ActionResult {
+	if !config.IsDenomination(usd) {
+		return buildResult(a, df, nil, 0, fmt.Errorf("withdraw %.2f is not an allowed denomination %v (private withdraw requires fixed amounts so the payout cannot be amount-correlated)", usd, config.Denominations))
+	}
+	if err := e.led.Debit(user, usd); err != nil {
+		return buildResult(a, df, nil, 0, err)
+	}
+	if !e.withdrawPool.Enqueue(user, usd) {
+		e.led.Credit(user, usd) // refund: a payout is already in flight
+		return buildResult(a, df, nil, 0, fmt.Errorf("a withdraw is already being settled privately for this account; wait for it to complete"))
+	}
+	est := int(e.withdrawPool.EstimatedDelay(user).Seconds())
+	resp := types.WithdrawResponse{
+		BalanceUsd:            e.led.Balance(user),
+		PendingPayout:         true,
+		EstimatedPayoutSeconds: est,
+	}
+	data, _ := json.Marshal(resp)
 	return buildResult(a, df, data, 1, nil)
 }

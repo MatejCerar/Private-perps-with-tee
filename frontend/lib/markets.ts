@@ -11,10 +11,22 @@ export type Market = {
 };
 
 export const MARKETS: Market[] = [
-  { sym: "ETH", name: "Ethereum", color: "#8aa0ff", px: 3, szDecimals: 4 },
   { sym: "BTC", name: "Bitcoin", color: "#f7a54a", px: 4, szDecimals: 5 },
+  { sym: "ETH", name: "Ethereum", color: "#7d87a8", px: 3, szDecimals: 4 },
   { sym: "SOL", name: "Solana", color: "#3fe0b0", px: 2, szDecimals: 2 },
-  { sym: "HYPE", name: "Hyperliquid", color: "#6ee7d0", px: 2, szDecimals: 2 },
+  { sym: "XRP", name: "XRP", color: "#55c0ff", px: 4, szDecimals: 1 },
+  { sym: "HYPE", name: "Hyperliquid", color: "#6ee7d0", px: 3, szDecimals: 2 },
+  { sym: "BNB", name: "BNB", color: "#f3ba2f", px: 2, szDecimals: 3 },
+  { sym: "DOGE", name: "Dogecoin", color: "#c2a633", px: 5, szDecimals: 0 },
+  { sym: "AVAX", name: "Avalanche", color: "#e84142", px: 3, szDecimals: 2 },
+  { sym: "LINK", name: "Chainlink", color: "#2a5ada", px: 3, szDecimals: 1 },
+  { sym: "ARB", name: "Arbitrum", color: "#28a0f0", px: 4, szDecimals: 1 },
+  { sym: "OP", name: "Optimism", color: "#ff0420", px: 4, szDecimals: 1 },
+  { sym: "SUI", name: "Sui", color: "#4da2ff", px: 4, szDecimals: 1 },
+  { sym: "APT", name: "Aptos", color: "#6fd0c6", px: 3, szDecimals: 2 },
+  { sym: "TIA", name: "Celestia", color: "#7b2bf9", px: 3, szDecimals: 1 },
+  { sym: "SEI", name: "Sei", color: "#9e1f19", px: 4, szDecimals: 1 },
+  { sym: "INJ", name: "Injective", color: "#00d2ff", px: 3, szDecimals: 2 },
 ];
 
 export function marketBy(sym: string): Market {

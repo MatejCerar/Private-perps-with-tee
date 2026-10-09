@@ -1,0 +1,24 @@
+# Override that builds extension-tee from THIS repo alone (no monorepo layout).
+# Use together with the base + coston2 compose:
+#   docker compose -f docker-compose.yaml -f docker-compose.coston2.yaml -f docker-compose.selfcontained.yaml up -d --build
+services:
+  extension-tee:
+    build:
+      context: .
+      dockerfile: Dockerfile.selfcontained
+    # Publish the extension action port (localhost only) so the Direct-TEE relayer
+    # can deliver instructions straight to the enclave, bypassing FTDC consensus.
+    ports:
+      - "127.0.0.1:7702:7702"
+  # Join the Coston2 indexer's network so ext-proxy reaches the already-synced
+  # MySQL by its service name (coston2-indexer-db) instead of host.docker.internal.
+  # `default` keeps ext-proxy on the hype-accounts network (redis, extension-tee).
+  ext-proxy:
+    networks:
+      - default
+      - indexer-net
+
+networks:
+  indexer-net:
+    external: true
+    name: coston2_default

@@ -78,6 +78,21 @@ type Extension struct {
 	userLocks     sync.Map // common.Address -> *sync.Mutex
 	reconcileStop chan struct{}
 
+	// depositPool holds escrowed deposits for delayed/batched private funding
+	// (HL_PRIVATE_DEPOSIT=true). Non-nil only when enabled with a shared treasury
+	// (treasury or vault funding). When set, deposit handlers enqueue instead of
+	// funding synchronously, and the batch funder funds matured batches.
+	depositPool     *DepositPool
+	batchFunderStop chan struct{}
+
+	// withdrawPool is the mirror on the way out: a WITHDRAW debits the ledger and
+	// enqueues here; the payout batcher unwinds the HL account to the treasury after
+	// a randomized, batched delay, so the on-chain withdraw request and the HL
+	// reclaim can't be time/amount-correlated. Same DepositPool mechanics (user,
+	// denomination, delay). Non-nil whenever depositPool is.
+	withdrawPool      *DepositPool
+	payoutBatcherStop chan struct{}
+
 	// unifiedSet records which bridge-mode user accounts have been switched to
 	// HL unified mode (done once at first deposit). common.Address -> struct{}.
 	unifiedSet sync.Map
@@ -175,6 +190,7 @@ func New(extensionPort, signPort int) *Extension {
 			logger.Warnf("treasury SetAbstraction(standard): %v (ensure treasury is flat and standard)", err)
 		}
 		logger.Infof("HL funding mode: vault (bridge2Mock=%v, vault=%s)", e.bridge2Mock, e.vaultAddr.Hex())
+		e.enablePrivateDeposit()
 		return e
 	}
 
@@ -194,7 +210,33 @@ func New(extensionPort, signPort int) *Extension {
 		logger.Warnf("treasury SetAbstraction(standard): %v (ensure treasury is flat and in standard mode)", err)
 	}
 
-	return NewWith(extensionPort, signPort, factory, treasury, treasuryAddr, seed)
+	et := NewWith(extensionPort, signPort, factory, treasury, treasuryAddr, seed)
+	et.enablePrivateDeposit()
+	return et
+}
+
+// enablePrivateDeposit turns on delayed/batched funding when HL_PRIVATE_DEPOSIT is
+// set and a shared treasury exists to fund from. Idempotent; a no-op otherwise, so
+// the original synchronous deposit path is kept. Only the production constructor
+// (New) calls this; test constructors drive the deposit pool directly.
+func (e *Extension) enablePrivateDeposit() {
+	if !config.PrivateDeposit || e.treasury == nil || e.depositPool != nil {
+		return
+	}
+	e.depositPool = NewDepositPool(
+		time.Duration(config.FundDelayMinSeconds)*time.Second,
+		time.Duration(config.FundDelayMaxSeconds)*time.Second,
+		0,
+	)
+	e.withdrawPool = NewDepositPool(
+		time.Duration(config.FundDelayMinSeconds)*time.Second,
+		time.Duration(config.FundDelayMaxSeconds)*time.Second,
+		0,
+	)
+	e.startBatchFunder()
+	e.startPayoutBatcher()
+	logger.Infof("private deposit+withdraw enabled: batchMin=%d, delay=[%ds,%ds], tick=%ds, denominations=%v",
+		config.BatchMin, config.FundDelayMinSeconds, config.FundDelayMaxSeconds, config.FundTickSeconds, config.Denominations)
 }
 
 // NewWith is the test constructor for treasury (legacy) funding mode.
@@ -223,13 +265,15 @@ func NewWithBridge(extensionPort, signPort int, f hl.Factory, seed []byte, ac Ar
 
 func buildExtension(extensionPort, signPort int, f hl.Factory, seed []byte) *Extension {
 	e := &Extension{
-		signPort:      signPort,
-		factory:       f,
-		masterSeed:    seed,
-		keyer:         keys.NewSeedKeyer(seed),
-		led:           ledger.New(),
-		accounts:      map[common.Address]hl.Account{},
-		reconcileStop: make(chan struct{}),
+		signPort:        signPort,
+		factory:         f,
+		masterSeed:      seed,
+		keyer:           keys.NewSeedKeyer(seed),
+		led:             ledger.New(),
+		accounts:          map[common.Address]hl.Account{},
+		reconcileStop:     make(chan struct{}),
+		batchFunderStop:   make(chan struct{}),
+		payoutBatcherStop: make(chan struct{}),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /state", e.stateHandler)
@@ -358,5 +402,21 @@ func (e *Extension) Stop() {
 		// already closed
 	default:
 		close(e.reconcileStop)
+	}
+	if e.batchFunderStop != nil {
+		select {
+		case <-e.batchFunderStop:
+			// already closed
+		default:
+			close(e.batchFunderStop)
+		}
+	}
+	if e.payoutBatcherStop != nil {
+		select {
+		case <-e.payoutBatcherStop:
+			// already closed
+		default:
+			close(e.payoutBatcherStop)
+		}
 	}
 }

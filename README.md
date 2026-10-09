@@ -1,10 +1,77 @@
-# Hello World Extension
+# Flare Private Perps
 
-A working Hello World example for building Flare Confidential Compute (FCC) extensions. This repository demonstrates a complete, runnable extension with on-chain contracts, deployment tooling, and registration scripts — everything you need to understand how extensions work on the Flare TEE infrastructure.
+**Private, unlinkable perpetuals trading on Flare, enforced by a TEE.**
 
-> **Hyperliquid funding path status:** see [docs/STATUS.md](docs/STATUS.md) for
-> where every component of the Flare → Arbitrum → Hyperliquid path stands, what
-> was proven live, and how to re-run each proof.
+A Flare Confidential Compute (FCC) extension that lets a user on Flare own and
+operate a Hyperliquid (spot + perps) trading account by sending plain on-chain
+instructions - **without ever holding the account's private key, and without
+anyone being able to link their Flare wallet to their trading account.** The key
+is created and used inside a Trusted Execution Environment; the executing code is
+attested and registered on-chain, so anyone can verify the thing holding the funds
+is exactly the reviewed code.
+
+This is the upstream Flare "Hyperliquid Controlled Accounts" extension, upgraded
+with **private deposits and withdrawals**: funding moves in both directions through
+pooled, randomized, batched, fixed-denomination transfers, so an observer cannot
+correlate your on-chain deposit/withdraw with the Hyperliquid account that gets
+funded or unwound.
+
+> **What "private" means (read this):** Hyperliquid is a public ledger, so we
+> cannot hide *what* an account does - only *that it is yours*. The guarantee is
+> **unlinkability**, and its strength is the batch size. See
+> [docs/privacy.md](docs/privacy.md) for the full, honest threat model.
+
+## How it works, in one picture
+
+```
+User (Flare wallet)                         Trusted Execution Environment
+  |                                            - derives your HL account (seed, in-TEE)
+  |  on-chain DEPOSIT (escrow to Vault)        - deposit pool: funds it after a
+  |------------------------------------------>    randomized, batched delay
+  |                                            - trades it on Hyperliquid
+  |  on-chain WITHDRAW (debit)                 - withdraw pool: unwinds it to the
+  |------------------------------------------>    treasury after a randomized delay
+  |  <--- release from Vault --------------------
+```
+
+- **Deposit/withdraw** are on-chain instructions (escrow + release through a shared
+  `Vault`); the *private* funding/reclaim happens inside the TEE, off-chain and
+  delayed, so it can't be time/amount-correlated.
+- **Trades** (long/short, leverage, cancel) are on-chain instructions relayed to the
+  TEE, which signs and executes them on Hyperliquid.
+
+## Quick links
+
+- **Private deposits & withdrawals:** [docs/privacy.md](docs/privacy.md)
+- **System architecture & trust model:** [docs/architecture.md](docs/architecture.md)
+- **On-chain e2e runbook (Coston2):** [docs/hyperliquid.md](docs/hyperliquid.md)
+- **The on-chain contract:** [docs/instruction-sender.md](docs/instruction-sender.md)
+- **Frontend (the trading terminal):** [frontend/](frontend/)
+
+## Deploying: the one gotcha ("Extension ID is not set.")
+
+A deposit/trade that reverts on-chain with **`Extension ID is not set.`** means the
+deployed `HyperliquidInstructionSender` was never wired to its extension - the
+registration step (`setExtensionId`, and `setVault` for deposits) did not run. Fix
+it by completing the full deploy, which runs deploy -> register -> `setExtensionId`:
+
+```bash
+./scripts/full-setup.sh --chain coston2
+```
+
+Then seed the treasury (below) or funding has nothing to send. Until the stack is
+fully registered, the on-chain path reverts by design.
+
+> **Build status for the Flare -> Arbitrum -> Hyperliquid funding path:** see
+> [docs/STATUS.md](docs/STATUS.md).
+
+---
+
+> The sections below are the original Flare FCC extension-scaffold reference
+> (structure, build tooling, registration). They remain accurate for building and
+> deploying this extension.
+
+# Extension scaffold reference
 
 ## Repository Structure
 
@@ -498,6 +565,25 @@ Copy `.env.example` and fill in the Hyperliquid-specific values:
 | `HL_MAX_TOTAL_DEPOSIT_USD` | `5000` | Enforced against the current net ledger total; ultimately bounded by the treasury balance (global cap) |
 
 > Both `HL_MASTER_SEED` and `HL_TREASURY_KEY` are secrets. Never commit real values. Leave them empty in `.env.example`.
+
+### Private deposit & withdraw (the Private Perps upgrade)
+
+Off by default (original synchronous behaviour). Turn on unlinkable funding in both
+directions with `HL_PRIVATE_DEPOSIT=true`. Full rationale + threat model in
+[docs/privacy.md](docs/privacy.md).
+
+| Variable | Default | Description |
+|---|---|---|
+| `HL_PRIVATE_DEPOSIT` | `false` | Enable delayed/batched private deposit **and** withdraw |
+| `HL_DENOMINATIONS` | `25,100,500` | Allowed fixed deposit/withdraw amounts (USD) |
+| `HL_BATCH_MIN` | `1` | Min matured entries funded/settled together (the anonymity set) |
+| `HL_FUND_DELAY_MIN_SECONDS` | `20` | Randomized funding/payout delay, lower bound |
+| `HL_FUND_DELAY_MAX_SECONDS` | `60` | Randomized delay, upper bound |
+| `HL_FUND_TICK_SECONDS` | `5` | How often the batchers drain due entries |
+
+Demo defaults are short so the flow is visible. For real unlinkability use a large
+batch and a long window (e.g. `HL_BATCH_MIN=10`, delay 30 min - 6 h) - privacy
+strength is the batch size.
 
 ### Instruction set
 

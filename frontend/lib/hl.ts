@@ -95,6 +95,30 @@ export async function fetchMids(): Promise<Record<string, number>> {
   return out;
 }
 
+export type Candle = { t: number; o: number; h: number; l: number; c: number; v: number };
+
+// Candle history for the selected coin, used to draw the market chart. `interval`
+// is an HL candle interval ("5m", "15m", "1h"…); `lookbackMs` sets the window.
+export async function fetchCandles(
+  coin: string,
+  interval: string,
+  lookbackMs: number,
+  now: number,
+): Promise<Candle[]> {
+  const raw = (await info({
+    type: "candleSnapshot",
+    req: { coin, interval, startTime: now - lookbackMs, endTime: now },
+  })) as any[];
+  return (raw ?? []).map((k) => ({
+    t: num(k.t),
+    o: num(k.o),
+    h: num(k.h),
+    l: num(k.l),
+    c: num(k.c),
+    v: num(k.v),
+  }));
+}
+
 // Order-size precision per coin, from HL's perp meta. Used to round order sizes
 // so Hyperliquid doesn't reject them. Best-effort — callers fall back to the
 // static table in lib/markets.ts.

@@ -1,0 +1,14 @@
+# Keep the self-contained extension-tee build context (context: .) small.
+# The enclave build only needs go.mod/go.sum + cmd/ internal/ pkg/.
+.git
+frontend
+e2e
+docs
+tools
+node_modules
+**/node_modules
+*.patch
+*.png
+config/pool-assignments.json
+private-deposit.patch
+privacy.patch

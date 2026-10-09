@@ -1,0 +1,24 @@
+# Self-contained enclave build: clones tee-node at the pinned commit INSIDE the image
+# and mirrors the monorepo layout, so `docker compose` can build extension-tee from
+# this repo alone (no ../.. monorepo checkout needed). Use via docker-compose.selfcontained.yaml.
+FROM golang:1.25-bookworm AS builder
+
+ARG TEE_NODE_COMMIT=31fc839ae6d2
+WORKDIR /build
+
+# Clone tee-node at the exact commit go.mod's `replace ... => ../../tee-node-hype` pins.
+RUN git clone https://github.com/flare-foundation/tee-node.git tee-node-hype \
+ && git -C tee-node-hype checkout ${TEE_NODE_COMMIT}
+
+# The extension repo goes where the replace path resolves to: from
+# /build/extension-examples/hype-accounts, `../../tee-node-hype` == /build/tee-node-hype.
+COPY . /build/extension-examples/hype-accounts
+WORKDIR /build/extension-examples/hype-accounts
+
+RUN go mod download
+# Pure-Go build (secp256k1 fallback), static binary.
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /app/extension-tee ./cmd/docker
+
+FROM gcr.io/distroless/static
+COPY --from=builder /app/extension-tee /extension-tee
+ENTRYPOINT ["/extension-tee"]

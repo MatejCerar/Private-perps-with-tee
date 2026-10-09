@@ -14,11 +14,14 @@ import { stringToHex } from "viem";
 import { instructionSenderAbi, testUsdcAbi, vaultAbi } from "@/lib/abi";
 import {
   activeChain,
+  DENOMINATIONS,
   hlExplorerAddress,
   INSTRUCTION_FEE_WEI,
   INSTRUCTION_SENDER,
   INSTRUCTION_SENDER_OK,
   MAX_DEPOSIT_USD,
+  nearestDenomination,
+  PRIVACY_MODE,
   TESTUSDC,
   VAULT,
   VAULT_CONFIGURED,
@@ -26,21 +29,35 @@ import {
 } from "@/lib/config";
 import { decodeResultData, extractInstructionId, pollResult } from "@/lib/tee";
 import {
+  RELAYER_ENABLED,
+  pollRelayerResult,
+  deliverDeposit,
+  deliverWithdraw,
+  deliverConfirm,
+  deliverOrder,
+  deliverCancel,
+} from "@/lib/relay";
+import {
   fetchAccount,
   fetchMids,
   fetchSzDecimals,
   type HlAccount,
 } from "@/lib/hl";
-import { css, C, num, usd, truncAddr } from "@/lib/ui";
-import { marketBy } from "@/lib/markets";
+import { css, num, usd, truncAddr } from "@/lib/ui";
+import { marketBy, MARKETS } from "@/lib/markets";
 import { Header, Banner } from "@/components/Header";
 import { Hero, Onboarding } from "@/components/Hero";
 import { TradeCard, type TradePayload } from "@/components/TradeCard";
-import { AccountColumn } from "@/components/AccountColumn";
+import { Chart } from "@/components/Chart";
+import { MarketsSidebar } from "@/components/MarketsSidebar";
+import { PositionsPanel } from "@/components/PositionsPanel";
+import { BalanceCard } from "@/components/BalanceCard";
 import { TxModal } from "@/components/TxModal";
 import { StatusToast, type RunKind, type RunState } from "@/components/StatusToast";
 import { SelfFundPanel } from "@/components/SelfFundPanel";
-import { AdminPanel } from "@/components/AdminPanel";
+import { PooledDepositPanel } from "@/components/PooledDepositPanel";
+import { PooledWithdrawPanel } from "@/components/PooledWithdrawPanel";
+import { ActivityList, type ActivityEntry } from "@/components/ActivityList";
 
 type Fn = "placeOrder" | "cancel";
 
@@ -98,6 +115,34 @@ export default function Home() {
     amountUsd: number;
   } | null>(null);
 
+  // Pooled/delayed deposit state: set when a deposit returns pendingFunding:true.
+  // The HL account is funded privately after a randomized, batched delay; cleared
+  // once the polled balance becomes positive (funding landed).
+  const [pooledDeposit, setPooledDeposit] = useState<{
+    address?: string;
+    amountUsd: number;
+    estimatedSeconds: number;
+  } | null>(null);
+
+  // Pooled/delayed payout state: set when a withdraw returns pendingPayout:true.
+  // The balance is debited now; the HL account is unwound to the treasury after a
+  // randomized, batched delay. Cleared on dismiss or when the countdown elapses.
+  const [pooledWithdraw, setPooledWithdraw] = useState<{
+    amountUsd: number;
+    estimatedSeconds: number;
+  } | null>(null);
+
+  // Persistent "Recent on-chain activity": both deposit escrow and withdraw
+  // release txs, newest first, capped so the list stays compact.
+  const [activity, setActivity] = useState<ActivityEntry[]>([]);
+  const pushActivity = useCallback(
+    (kind: ActivityEntry["kind"], hash: `0x${string}`) =>
+      setActivity((a) =>
+        [{ kind, hash, ts: Date.now() }, ...a.filter((e) => e.hash !== hash)].slice(0, 8),
+      ),
+    [],
+  );
+
   const dismissTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ---- derived ----
@@ -135,8 +180,10 @@ export default function Home() {
   }, [address]);
 
   // ---- poll live mids + fetch szDecimals once (public data) ----
+  // Prices are public market data, so load them ALWAYS (even before the wallet is
+  // connected or a deposit is made) - a trading app should show the market the
+  // moment it opens, like Hyperliquid.
   useEffect(() => {
-    if (!isConnected) return;
     let alive = true;
     const load = () =>
       fetchMids()
@@ -151,7 +198,7 @@ export default function Home() {
       alive = false;
       clearInterval(t);
     };
-  }, [isConnected]);
+  }, []);
 
   // ---- poll the derived HL account ----
   const loadAccount = useCallback(async () => {
@@ -169,6 +216,20 @@ export default function Home() {
     const t = setInterval(loadAccount, 5000);
     return () => clearInterval(t);
   }, [hlAddress, loadAccount, refreshNonce]);
+
+  // Clear the pooled-deposit panel once private funding has landed (balance > 0).
+  useEffect(() => {
+    if (pooledDeposit && balance > 0) setPooledDeposit(null);
+  }, [pooledDeposit, balance]);
+
+  // Clear the pooled-withdraw panel after the estimated payout delay elapses (not
+  // tied to balance - the balance is already debited when the panel shows).
+  useEffect(() => {
+    if (!pooledWithdraw) return;
+    const ms = Math.max(0, pooledWithdraw.estimatedSeconds) * 1000 + 1500;
+    const t = setTimeout(() => setPooledWithdraw(null), ms);
+    return () => clearTimeout(t);
+  }, [pooledWithdraw]);
 
   // ---- animated balance count-up ----
   const [displayBalance, setDisplayBalance] = useState(0);
@@ -220,6 +281,10 @@ export default function Home() {
       opts?: {
         onSlip?: (decoded: unknown) => Promise<void>;
         onDecoded?: (decoded: unknown) => void;
+        // Direct-TEE: deliver the instruction to the enclave via the relayer and
+        // return its action id. When set and the relayer is enabled, the result
+        // is polled from the relayer instead of the FTDC instruction id.
+        relayerDeliver?: () => Promise<string>;
       },
     ) => {
       if (!publicClient || busy) return;
@@ -242,10 +307,22 @@ export default function Home() {
         const receipt = await publicClient.waitForTransactionReceipt({ hash });
         if (receipt.status !== "success") throw new Error("transaction reverted on-chain");
 
-        const instructionId = extractInstructionId(receipt);
-        setRun((s) => (s ? { ...s, phase: "relaying", stepReached: 2, instructionId } : s));
-
-        const response = await pollResult(instructionId);
+        // Direct-TEE: deliver via the relayer and poll its action id. Otherwise
+        // use the on-chain FTDC instruction id from the receipt.
+        let response;
+        if (RELAYER_ENABLED && opts?.relayerDeliver) {
+          const actionId = await opts.relayerDeliver();
+          setRun((s) =>
+            s
+              ? { ...s, phase: "relaying", stepReached: 2, instructionId: actionId as `0x${string}` }
+              : s,
+          );
+          response = await pollRelayerResult(actionId);
+        } else {
+          const instructionId = extractInstructionId(receipt);
+          setRun((s) => (s ? { ...s, phase: "relaying", stepReached: 2, instructionId } : s));
+          response = await pollResult(instructionId);
+        }
         const ok = response.result.status === 1;
         const decoded = decodeResultData(response.result.data);
         const resultJson = JSON.stringify(decoded ?? {}, null, 2);
@@ -308,11 +385,21 @@ export default function Home() {
             chainId: activeChain.id,
           }),
         meta,
+        address
+          ? {
+              relayerDeliver: () =>
+                fn === "placeOrder"
+                  ? deliverOrder(address, payload)
+                  : deliverCancel(address, payload),
+            }
+          : undefined,
       ),
-    [runInstruction, writeContractAsync],
+    [runInstruction, writeContractAsync, address],
   );
 
-  const vaultNotConfigured = (kind: RunKind, title: string) =>
+  // On-chain vault isn't configured. Surface a clear operator-facing reason
+  // instead of letting the InstructionSender write revert cryptically.
+  const backendNotConfigured = (kind: RunKind, title: string) =>
     setRun({
       phase: "error",
       stepReached: 0,
@@ -320,15 +407,19 @@ export default function Home() {
       kind,
       title,
       sub: "",
-      error: "Vault not configured — set NEXT_PUBLIC_TESTUSDC and NEXT_PUBLIC_VAULT.",
+      error:
+        "On-chain vault not configured - set NEXT_PUBLIC_TESTUSDC and NEXT_PUBLIC_VAULT (printed by deploy-vault) in frontend/.env.local.",
     });
 
   // Deposit: faucet-mint any TestUSDC shortfall → approve → escrow to the vault.
+  // The TEE funds the derived HL account privately after a delay; the result may
+  // carry pendingFunding:true + estimatedFundingSeconds, which drives the panel.
   const doDeposit = useCallback(
     async (amt: number) => {
       if (busy || !publicClient || !address) return;
       const title = `Deposit ${usd(amt)}`;
-      if (!VAULT_CONFIGURED) return vaultNotConfigured("deposit", title);
+
+      if (!VAULT_CONFIGURED) return backendNotConfigured("deposit", title);
       const units = usdToUnits(amt);
       await runInstruction(
         async () => {
@@ -364,7 +455,7 @@ export default function Home() {
             });
             await publicClient.waitForTransactionReceipt({ hash: h });
           }
-          return writeContractAsync({
+          const depositHash = await writeContractAsync({
             address: INSTRUCTION_SENDER,
             abi: instructionSenderAbi,
             functionName: "deposit",
@@ -372,41 +463,73 @@ export default function Home() {
             value: INSTRUCTION_FEE_WEI,
             chainId: activeChain.id,
           });
+          pushActivity("deposit", depositHash);
+          return depositHash;
         },
         { kind: "deposit", title, sub: "Mint + approve TestUSDC, then escrow to the vault" },
         {
+          relayerDeliver: () => deliverDeposit(address, amt),
           onDecoded: (decoded) => {
-            const d = decoded as { selfFund?: boolean; selfFundAddress?: string };
-            if (d?.selfFund && d?.selfFundAddress) {
+            const d = decoded as {
+              selfFund?: boolean;
+              selfFundAddress?: string;
+              pendingFunding?: boolean;
+              estimatedFundingSeconds?: number;
+              hlAddress?: string;
+            };
+            if (d?.pendingFunding) {
+              // Pooled/delayed private deposit: funded off-schedule, batched.
+              setPooledDeposit({
+                address: typeof d.hlAddress === "string" ? d.hlAddress : hlAddress,
+                amountUsd: amt,
+                estimatedSeconds:
+                  typeof d.estimatedFundingSeconds === "number"
+                    ? d.estimatedFundingSeconds
+                    : 0,
+              });
+            } else if (d?.selfFund && d?.selfFundAddress) {
               setSelfFund({ address: d.selfFundAddress, amountUnits: units, amountUsd: amt });
             }
           },
         },
       );
     },
-    [busy, publicClient, address, runInstruction, writeContractAsync],
+    [
+      busy,
+      publicClient,
+      address,
+      hlAddress,
+      runInstruction,
+      writeContractAsync,
+      pushActivity,
+    ],
   );
 
   // Withdraw: requestWithdraw (unwind on HL, TEE signs a slip) → executeWithdraw
   // on the vault to release the escrowed TestUSDC on Coston.
   const doWithdraw = useCallback(
     async (amt: number) => {
-      if (busy || !publicClient) return;
+      if (busy) return;
       const title = `Withdraw ${usd(amt)}`;
-      if (!VAULT_CONFIGURED) return vaultNotConfigured("withdraw", title);
+      if (!publicClient) return;
+      if (!VAULT_CONFIGURED) return backendNotConfigured("withdraw", title);
       const units = usdToUnits(amt);
       await runInstruction(
-        () =>
-          writeContractAsync({
+        async () => {
+          const reqHash = await writeContractAsync({
             address: INSTRUCTION_SENDER,
             abi: instructionSenderAbi,
             functionName: "requestWithdraw",
             args: [TESTUSDC, units],
             value: INSTRUCTION_FEE_WEI,
             chainId: activeChain.id,
-          }),
+          });
+          pushActivity("withdraw", reqHash);
+          return reqHash;
+        },
         { kind: "withdraw", title, sub: "Unwind on HL, then release on Coston" },
         {
+          relayerDeliver: address ? () => deliverWithdraw(address, amt) : undefined,
           onSlip: async (decoded) => {
             const d = decoded as {
               vault?: string;
@@ -432,12 +555,30 @@ export default function Home() {
               ],
               chainId: activeChain.id,
             });
+            pushActivity("withdraw", h);
             await publicClient.waitForTransactionReceipt({ hash: h });
+          },
+          onDecoded: (decoded) => {
+            const d = decoded as {
+              pendingPayout?: boolean;
+              estimatedPayoutSeconds?: number;
+            };
+            if (d?.pendingPayout) {
+              // Pooled/delayed private payout: debited now, unwound to treasury
+              // after a randomized, batched delay.
+              setPooledWithdraw({
+                amountUsd: amt,
+                estimatedSeconds:
+                  typeof d.estimatedPayoutSeconds === "number"
+                    ? d.estimatedPayoutSeconds
+                    : 0,
+              });
+            }
           },
         },
       );
     },
-    [busy, publicClient, runInstruction, writeContractAsync],
+    [busy, publicClient, address, runInstruction, writeContractAsync, pushActivity],
   );
 
   // Confirm self-funding: the user funded their HL address via the faucet and
@@ -457,10 +598,12 @@ export default function Home() {
         }),
       { kind: "deposit", title, sub: "Verifying your HL balance…" },
       {
+        relayerDeliver:
+          address && selfFund ? () => deliverConfirm(address, selfFund.amountUsd) : undefined,
         onDecoded: () => setSelfFund(null),
       },
     );
-  }, [busy, publicClient, selfFund, runInstruction, writeContractAsync]);
+  }, [busy, publicClient, address, selfFund, runInstruction, writeContractAsync]);
 
   // ---- action handlers ----
   const onConnect = async () => {
@@ -486,7 +629,11 @@ export default function Home() {
     setPendingCoins(new Set());
   };
 
-  const openDeposit = () => setModal({ kind: "deposit", amount: "50" });
+  const openDeposit = () =>
+    setModal({
+      kind: "deposit",
+      amount: PRIVACY_MODE ? String(DENOMINATIONS[0]) : "50",
+    });
   const openWithdraw = () => setModal({ kind: "withdraw", amount: "" });
   const modalSetMax = () =>
     setModal((m) =>
@@ -505,9 +652,12 @@ export default function Home() {
     if (!modal || busy) return;
     const amt = num(modal.amount);
     if (modal.kind === "deposit") {
-      if (amt <= 0 || balance + amt > MAX_DEPOSIT_USD) return;
+      // In privacy mode deposits must land on a fixed denomination; snap to the
+      // nearest so the batch stays anonymity-preserving.
+      const depositAmt = PRIVACY_MODE ? nearestDenomination(amt) : amt;
+      if (depositAmt <= 0 || balance + depositAmt > MAX_DEPOSIT_USD) return;
       setModal(null);
-      doDeposit(amt);
+      doDeposit(depositAmt);
     } else {
       if (amt <= 0 || amt > withdrawable) return;
       setModal(null);
@@ -519,6 +669,13 @@ export default function Home() {
     const d = szDecimals.current[p.coin] ?? marketBy(p.coin).szDecimals;
     const size = round(p.size, d);
     if (size <= 0) return;
+    const meta = {
+      kind: "trade" as RunKind,
+      title: p.label,
+      sub: `${usd(p.notional)} position`,
+    };
+    const hasLimit = p.orderType === "limit" && !!p.limitPx;
+
     const payload: Record<string, unknown> = {
       market: "perp",
       coin: p.coin,
@@ -529,12 +686,8 @@ export default function Home() {
       reduceOnly: p.reduceOnly,
       isCross: true,
     };
-    if (p.orderType === "limit" && p.limitPx) payload.limitPx = p.limitPx;
-    send("placeOrder", payload, {
-      kind: "trade",
-      title: p.label,
-      sub: `${usd(p.notional)} position`,
-    });
+    if (hasLimit) payload.limitPx = p.limitPx;
+    send("placeOrder", payload, meta);
     setPay("50");
   };
 
@@ -548,6 +701,11 @@ export default function Home() {
     if (size <= 0) return;
     const dir = p.szi >= 0 ? "Long" : "Short";
     setPendingCoins(new Set([coin]));
+    const meta = {
+      kind: "close" as RunKind,
+      title: `${frac < 1 ? "Close 50% " : "Close "}${coin} ${dir}`,
+      sub: "Reduce-only market order",
+    };
     // leverage:0 so the handler skips SetLeverage (HL rejects a leverage change
     // while a position is open); a reduce-only close keeps existing leverage.
     send(
@@ -562,17 +720,18 @@ export default function Home() {
         isCross: true,
         leverage: 0,
       },
-      { kind: "close", title: `${frac < 1 ? "Close 50% " : "Close "}${coin} ${dir}`, sub: "Reduce-only market order" },
+      meta,
     );
   };
 
   const onCancel = (coin: string, oid: number) => {
     if (busy) return;
-    send("cancel", { coin, orderId: oid }, {
-      kind: "cancel",
+    const meta = {
+      kind: "cancel" as RunKind,
       title: `Cancel ${coin} #${oid}`,
       sub: "Removing resting order",
-    });
+    };
+    send("cancel", { coin, orderId: oid }, meta);
   };
 
   const walletAddr = useMemo(() => (address ? truncAddr(address) : ""), [address]);
@@ -580,7 +739,7 @@ export default function Home() {
   return (
     <div
       style={css(
-        "min-height:100vh;background:radial-gradient(1200px 700px at 78% -10%, rgba(124,140,255,0.08), transparent 60%),#080a0f;color:#e9ecf4;font-family:var(--font-manrope),system-ui,sans-serif;font-feature-settings:'tnum' 1;-webkit-font-smoothing:antialiased;",
+        "min-height:100vh;background:radial-gradient(1200px 700px at 78% -10%, rgba(230,32,88,0.08), transparent 60%),#101010;color:#f6f6f6;font-family:var(--font-manrope),system-ui,sans-serif;font-feature-settings:'tnum' 1;-webkit-font-smoothing:antialiased;",
       )}
     >
       <Header
@@ -590,6 +749,9 @@ export default function Home() {
         walletAddr={walletAddr}
         flareAddress={address}
         hlAddress={hlAddress}
+        connecting={connecting}
+        connectError={connectError}
+        onConnect={onConnect}
         onSwitch={() => switchChain({ chainId: activeChain.id })}
         onDeposit={openDeposit}
         onDisconnect={onDisconnect}
@@ -606,21 +768,68 @@ export default function Home() {
       )}
 
       {isConnected && (
-        <main style={css("max-width:1080px;margin:0 auto;padding:26px 24px 80px;")}>
-          {showOnboarding && <Onboarding onDismiss={() => setShowOnboarding(false)} />}
-
-          {selfFund && (
-            <SelfFundPanel
-              address={selfFund.address}
-              amountUsd={selfFund.amountUsd}
-              busy={busy}
-              onConfirm={doConfirmFunding}
-              onDismiss={() => setSelfFund(null)}
+        <div className="terminal">
+          {/* LEFT: searchable markets list (drives the selected market) */}
+          <div className="terminal-left">
+            <MarketsSidebar
+              markets={MARKETS}
+              mids={mids}
+              selected={market}
+              onSelect={setMarket}
             />
-          )}
+          </div>
 
-          {address && <AdminPanel address={address} />}
-          <div style={css("display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:22px;align-items:start;")}>
+          {/* CENTER: chart on top, positions / open orders below */}
+          <div className="terminal-center">
+            {showOnboarding && <Onboarding onDismiss={() => setShowOnboarding(false)} />}
+
+            {PRIVACY_MODE && <PrivacyNote />}
+
+            {selfFund && (
+              <SelfFundPanel
+                address={selfFund.address}
+                amountUsd={selfFund.amountUsd}
+                busy={busy}
+                onConfirm={doConfirmFunding}
+                onDismiss={() => setSelfFund(null)}
+              />
+            )}
+
+            {pooledDeposit && (
+              <PooledDepositPanel
+                address={pooledDeposit.address}
+                amountUsd={pooledDeposit.amountUsd}
+                estimatedSeconds={pooledDeposit.estimatedSeconds}
+                busy={busy}
+                onCheckStatus={() => setRefreshNonce((n) => n + 1)}
+                onDismiss={() => setPooledDeposit(null)}
+              />
+            )}
+
+            {pooledWithdraw && (
+              <PooledWithdrawPanel
+                amountUsd={pooledWithdraw.amountUsd}
+                estimatedSeconds={pooledWithdraw.estimatedSeconds}
+                onDismiss={() => setPooledWithdraw(null)}
+              />
+            )}
+
+            <Chart market={market} mid={mids[market] ?? 0} />
+
+            <PositionsPanel
+              hlAddress={hlAddress}
+              positions={account?.positions ?? []}
+              orders={account?.openOrders ?? []}
+              mids={mids}
+              pendingCoins={pendingCoins}
+              busy={busy}
+              onClose={onClose}
+              onCancel={onCancel}
+            />
+          </div>
+
+          {/* RIGHT: trade panel on top, balance + deposit/withdraw below */}
+          <div className="terminal-right">
             <TradeCard
               market={market}
               mids={mids}
@@ -660,24 +869,19 @@ export default function Home() {
               onSubmit={onTrade}
             />
 
-            <AccountColumn
+            <BalanceCard
               balance={displayBalance}
               available={available}
               inPositions={inPositions}
               everDeposited={everDeposited}
               hlAddress={hlAddress}
-              positions={account?.positions ?? []}
-              orders={account?.openOrders ?? []}
-              mids={mids}
-              pendingCoins={pendingCoins}
-              busy={busy}
               onDeposit={openDeposit}
               onWithdraw={openWithdraw}
-              onClose={onClose}
-              onCancel={onCancel}
             />
+
+            <ActivityList entries={activity} />
           </div>
-        </main>
+        </div>
       )}
 
       {modal && (
@@ -688,6 +892,8 @@ export default function Home() {
           withdrawable={withdrawable}
           maxDeposit={MAX_DEPOSIT_USD}
           busy={busy}
+          privacy={PRIVACY_MODE}
+          denominations={DENOMINATIONS}
           onAmount={(v) => setModal((m) => (m ? { ...m, amount: v } : m))}
           onMax={modalSetMax}
           onPick={(v) => setModal((m) => (m ? { ...m, amount: v } : m))}
@@ -704,6 +910,28 @@ export default function Home() {
           onDismiss={() => setRun(null)}
         />
       )}
+    </div>
+  );
+}
+
+// A calm, subtle note explaining the privacy behaviour. Mirrors the Banner's
+// soft, low-contrast style.
+function PrivacyNote() {
+  return (
+    <div
+      style={css(
+        "display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:12px;background:rgba(230,32,88,0.07);border:1px solid rgba(230,32,88,0.18);color:#fd6f8c;font-size:12.5px;font-weight:600;line-height:1.5;margin-bottom:18px;",
+      )}
+    >
+      <span
+        style={css(
+          "width:16px;height:16px;border-radius:50%;flex-shrink:0;border:1.5px solid rgba(230,32,88,0.6);",
+        )}
+      />
+      <span style={css("color:#fd6f8c;")}>
+        Private mode: deposits are pooled and your account is funded on a short,
+        randomized delay.
+      </span>
     </div>
   );
 }

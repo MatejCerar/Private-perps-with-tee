@@ -77,6 +77,13 @@ type DepositResponse struct {
 	// then call confirmFunding(token, amount) on the InstructionSender.
 	SelfFund        bool   `json:"selfFund,omitempty"`
 	SelfFundAddress string `json:"selfFundAddress,omitempty"`
+
+	// Private deposit (HL_PRIVATE_DEPOSIT): when true, the deposit is escrowed and
+	// the HL account is funded privately after a randomized, batched delay.
+	// BalanceUsd stays 0 until funding lands; the frontend shows a
+	// "funded privately in ~EstimatedFundingSeconds" state.
+	PendingFunding          bool `json:"pendingFunding,omitempty"`
+	EstimatedFundingSeconds int  `json:"estimatedFundingSeconds,omitempty"`
 }
 
 type OrderResponse struct {
@@ -91,6 +98,12 @@ type CancelResponse struct {
 
 type WithdrawResponse struct {
 	BalanceUsd float64 `json:"balanceUsd"`
+
+	// Private withdraw (HL_PRIVATE_DEPOSIT): when true, the ledger is debited now and
+	// the HL account is unwound to the treasury after a randomized, batched delay, so
+	// the frontend shows a "paid out privately in ~EstimatedPayoutSeconds" state.
+	PendingPayout          bool `json:"pendingPayout,omitempty"`
+	EstimatedPayoutSeconds int  `json:"estimatedPayoutSeconds,omitempty"`
 
 	// Vault withdrawal slip (present in "vault" funding mode): the user submits
 	// these to Vault.executeWithdraw(user, token, amount, withdrawalId, signature)

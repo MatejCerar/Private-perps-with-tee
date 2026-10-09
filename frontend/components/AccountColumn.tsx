@@ -26,13 +26,13 @@ export function AccountColumn(props: {
       {/* your money */}
       <div
         style={css(
-          "border-radius:18px;border:1px solid rgba(255,255,255,0.08);background:#12161f;padding:18px;",
+          "border-radius:18px;border:1px solid rgba(255,255,255,0.08);background:#1a1a1a;padding:18px;",
         )}
       >
         <div style={css("display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;")}>
           <span
             style={css(
-              "font-size:11px;color:#8a93a6;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;",
+              "font-size:11px;color:#777777;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;",
             )}
           >
             Your money
@@ -43,15 +43,15 @@ export function AccountColumn(props: {
                 href={hlExplorerAddress(props.hlAddress)}
                 target="_blank"
                 rel="noreferrer"
-                style={css("font-size:10.5px;font-weight:700;color:#8aa0ff;text-decoration:none;")}
+                style={css("font-size:10.5px;font-weight:700;color:#f73c68;text-decoration:none;")}
               >
                 View on HL ↗
               </a>
             )}
-            <span style={css("display:flex;align-items:center;gap:5px;font-size:10.5px;color:#6f7789;font-weight:600;")}>
+            <span style={css("display:flex;align-items:center;gap:5px;font-size:10.5px;color:#414141;font-weight:600;")}>
               <span
                 style={css(
-                  "width:5px;height:5px;border-radius:50%;background:#2ece6f;animation:hypePulse 2s ease-in-out infinite;",
+                  "width:5px;height:5px;border-radius:50%;background:#61b854;animation:hypePulse 2s ease-in-out infinite;",
                 )}
               />
               Live
@@ -65,7 +65,7 @@ export function AccountColumn(props: {
         >
           {usd(props.balance)}
         </div>
-        <div style={css("font-size:12px;color:#8a93a6;margin-bottom:14px;")}>
+        <div style={css("font-size:12px;color:#777777;margin-bottom:14px;")}>
           {props.everDeposited ? "Total equity" : "Deposit to start"}
         </div>
         {props.everDeposited && (
@@ -75,19 +75,19 @@ export function AccountColumn(props: {
             )}
           >
             <div style={css("flex:1;")}>
-              <div style={css("font-size:10px;color:#8a93a6;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;margin-bottom:3px;")}>
+              <div style={css("font-size:10px;color:#777777;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;margin-bottom:3px;")}>
                 Available
               </div>
-              <div style={css("font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;color:#e9ecf4;")}>
+              <div style={css("font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;color:#f6f6f6;")}>
                 {usd(props.available)}
               </div>
             </div>
             <div style={css("width:1px;background:rgba(255,255,255,0.08);")} />
             <div style={css("flex:1;")}>
-              <div style={css("font-size:10px;color:#8a93a6;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;margin-bottom:3px;")}>
+              <div style={css("font-size:10px;color:#777777;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;margin-bottom:3px;")}>
                 In positions
               </div>
-              <div style={css("font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;color:#e9ecf4;")}>
+              <div style={css("font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;color:#f6f6f6;")}>
                 {usd(props.inPositions)}
               </div>
             </div>
@@ -97,7 +97,7 @@ export function AccountColumn(props: {
           <button
             onClick={props.onDeposit}
             style={css(
-              `padding:11px;border-radius:11px;border:none;background:${C.accent};color:#0b0d13;font-size:13.5px;font-weight:800;cursor:pointer;`,
+              `padding:11px;border-radius:11px;border:none;background:${C.accent};color:#ffffff;font-size:13.5px;font-weight:800;cursor:pointer;`,
             )}
           >
             Deposit
@@ -105,7 +105,7 @@ export function AccountColumn(props: {
           <button
             onClick={props.onWithdraw}
             style={css(
-              "padding:11px;border-radius:11px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.03);color:#e9ecf4;font-size:13.5px;font-weight:700;cursor:pointer;",
+              "padding:11px;border-radius:11px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.03);color:#f6f6f6;font-size:13.5px;font-weight:700;cursor:pointer;",
             )}
           >
             Withdraw
@@ -116,7 +116,7 @@ export function AccountColumn(props: {
       {/* positions */}
       <div
         style={css(
-          "border-radius:18px;border:1px solid rgba(255,255,255,0.08);background:#12161f;padding:18px;",
+          "border-radius:18px;border:1px solid rgba(255,255,255,0.08);background:#1a1a1a;padding:18px;",
         )}
       >
         <div
@@ -126,7 +126,7 @@ export function AccountColumn(props: {
         >
           <span
             style={css(
-              "font-size:11px;color:#8a93a6;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;",
+              "font-size:11px;color:#777777;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;",
             )}
           >
             Positions
@@ -136,7 +136,7 @@ export function AccountColumn(props: {
               href={hlExplorerAddress(props.hlAddress)}
               target="_blank"
               rel="noreferrer"
-              style={css("font-size:10.5px;font-weight:700;color:#8aa0ff;text-decoration:none;")}
+              style={css("font-size:10.5px;font-weight:700;color:#f73c68;text-decoration:none;")}
             >
               Explorer ↗
             </a>
@@ -161,7 +161,7 @@ export function AccountColumn(props: {
             <div style={css("font-size:13.5px;font-weight:700;margin-bottom:4px;")}>
               No open positions yet
             </div>
-            <div style={css("font-size:12.5px;color:#8a93a6;line-height:1.4;")}>
+            <div style={css("font-size:12.5px;color:#777777;line-height:1.4;")}>
               Make your first trade with the panel on the left.
             </div>
           </div>
@@ -172,12 +172,12 @@ export function AccountColumn(props: {
       {props.orders.length > 0 && (
         <div
           style={css(
-            "border-radius:18px;border:1px solid rgba(255,255,255,0.08);background:#12161f;padding:18px;",
+            "border-radius:18px;border:1px solid rgba(255,255,255,0.08);background:#1a1a1a;padding:18px;",
           )}
         >
           <div
             style={css(
-              "font-size:11px;color:#8a93a6;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:12px;",
+              "font-size:11px;color:#777777;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:12px;",
             )}
           >
             Open orders
@@ -188,7 +188,7 @@ export function AccountColumn(props: {
               "padding:3px 8px;border-radius:7px;font-size:10.5px;font-weight:800;color:" +
               (up ? C.green : C.red) +
               ";background:" +
-              (up ? "rgba(46,206,111,0.14)" : "rgba(255,93,95,0.14)") +
+              (up ? "rgba(97,184,84,0.14)" : "rgba(238,76,69,0.14)") +
               ";";
             return (
               <div
@@ -199,14 +199,14 @@ export function AccountColumn(props: {
               >
                 <span style={css("font-weight:800;font-size:13px;")}>{o.coin}</span>
                 <span style={css(badge)}>{o.side}</span>
-                <span style={css("font-size:12px;color:#8a93a6;font-variant-numeric:tabular-nums;")}>
+                <span style={css("font-size:12px;color:#777777;font-variant-numeric:tabular-nums;")}>
                   {sizeFmt(o.sz, marketBy(o.coin).px)} @ {price(o.limitPx)}
                 </span>
                 <button
                   onClick={() => props.onCancel(o.coin, o.oid)}
                   disabled={props.busy}
                   style={css(
-                    "margin-left:auto;padding:6px 12px;border-radius:9px;border:1px solid rgba(255,255,255,0.12);background:transparent;color:#c8cede;font-size:11.5px;font-weight:700;cursor:pointer;" +
+                    "margin-left:auto;padding:6px 12px;border-radius:9px;border:1px solid rgba(255,255,255,0.12);background:transparent;color:#d1d1d1;font-size:11.5px;font-weight:700;cursor:pointer;" +
                       (props.busy ? "opacity:0.5;cursor:not-allowed;" : ""),
                   )}
                 >
@@ -243,7 +243,7 @@ function PositionCard({
   const pnlPct = p.marginUsed > 0 ? (pnl / p.marginUsed) * 100 : 0;
   const dirLabel = isLong ? "Long" : "Short";
   const dirCol = isLong ? C.green : C.red;
-  const dirBg = isLong ? "rgba(46,206,111,0.14)" : "rgba(255,93,95,0.14)";
+  const dirBg = isLong ? "rgba(97,184,84,0.14)" : "rgba(238,76,69,0.14)";
 
   return (
     <div
@@ -270,7 +270,7 @@ function PositionCard({
           {dirLabel} {p.leverage}×
         </span>
         {closing && (
-          <span style={css("margin-left:auto;font-size:12px;color:#8a93a6;font-weight:600;")}>
+          <span style={css("margin-left:auto;font-size:12px;color:#777777;font-weight:600;")}>
             Closing…
           </span>
         )}
@@ -281,7 +281,7 @@ function PositionCard({
         <div>
           <div
             style={css(
-              "font-size:11px;color:#8a93a6;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;margin-bottom:3px;",
+              "font-size:11px;color:#777777;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;margin-bottom:3px;",
             )}
           >
             Unrealized PnL
@@ -312,7 +312,7 @@ function PositionCard({
 
       {/* position value */}
       <div style={css("display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;")}>
-        <span style={css("font-size:12.5px;color:#8a93a6;")}>Position value</span>
+        <span style={css("font-size:12.5px;color:#777777;")}>Position value</span>
         <span style={css("font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;")}>
           {usd(p.positionValue)}
         </span>
@@ -324,7 +324,7 @@ function PositionCard({
           onClick={() => onClose(p.coin, 0.5)}
           disabled={busy}
           style={css(
-            "padding:11px;border-radius:11px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.03);color:#c8cede;font-size:13.5px;font-weight:700;cursor:pointer;" +
+            "padding:11px;border-radius:11px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.03);color:#d1d1d1;font-size:13.5px;font-weight:700;cursor:pointer;" +
               (busy ? "opacity:0.5;cursor:not-allowed;" : ""),
           )}
         >
@@ -334,7 +334,7 @@ function PositionCard({
           onClick={() => onClose(p.coin, 1)}
           disabled={busy}
           style={css(
-            "padding:11px;border-radius:11px;border:none;background:rgba(255,93,95,0.14);color:#ff8082;font-size:13.5px;font-weight:800;cursor:pointer;" +
+            "padding:11px;border-radius:11px;border:none;background:rgba(238,76,69,0.14);color:#f2726c;font-size:13.5px;font-weight:800;cursor:pointer;" +
               (busy ? "opacity:0.5;cursor:not-allowed;" : ""),
           )}
         >
@@ -350,14 +350,14 @@ function Stat({ label, value, sub }: { label: string; value: string; sub?: strin
     <div>
       <div
         style={css(
-          "font-size:10px;color:#8a93a6;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;margin-bottom:5px;",
+          "font-size:10px;color:#777777;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;margin-bottom:5px;",
         )}
       >
         {label}
       </div>
       <div style={css("font-size:13.5px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.1;")}>
         {value}
-        {sub && <span style={css("color:#8a93a6;font-weight:600;font-size:11px;")}> {sub}</span>}
+        {sub && <span style={css("color:#777777;font-weight:600;font-size:11px;")}> {sub}</span>}
       </div>
     </div>
   );

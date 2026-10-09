@@ -29,22 +29,22 @@ export function SelfFundPanel(props: {
   return (
     <div
       style={css(
-        "border-radius:18px;border:1px solid rgba(227,173,70,0.35);background:linear-gradient(180deg,rgba(227,173,70,0.07),rgba(227,173,70,0.02));padding:18px;margin-bottom:22px;animation:hypeRise 0.28s ease;",
+        "border-radius:18px;border:1px solid rgba(253,172,89,0.35);background:linear-gradient(180deg,rgba(253,172,89,0.07),rgba(253,172,89,0.02));padding:18px;margin-bottom:22px;animation:hypeRise 0.28s ease;",
       )}
     >
       <div style={css("display:flex;align-items:center;gap:10px;margin-bottom:14px;")}>
         <span
           style={css(
-            "width:30px;height:30px;border-radius:9px;background:rgba(227,173,70,0.16);color:#e8c885;display:flex;align-items:center;justify-content:center;font-size:15px;",
+            "width:30px;height:30px;border-radius:9px;background:rgba(253,172,89,0.16);color:#fdac59;display:flex;align-items:center;justify-content:center;font-size:15px;",
           )}
         >
           ⛽
         </span>
         <div style={css("flex:1;min-width:0;")}>
-          <div style={css("font-size:14px;font-weight:800;color:#e9ecf4;")}>
+          <div style={css("font-size:14px;font-weight:800;color:#f6f6f6;")}>
             Fund your Hyperliquid account
           </div>
-          <div style={css("font-size:12px;color:#8a93a6;")}>
+          <div style={css("font-size:12px;color:#777777;")}>
             You're bringing your own testnet USDC — send {usd(props.amountUsd)} to the address
             below, then confirm.
           </div>
@@ -52,7 +52,7 @@ export function SelfFundPanel(props: {
         <button
           onClick={props.onDismiss}
           style={css(
-            "width:26px;height:26px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);background:transparent;color:#8a93a6;font-size:13px;cursor:pointer;flex-shrink:0;",
+            "width:26px;height:26px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);background:transparent;color:#777777;font-size:13px;cursor:pointer;flex-shrink:0;",
           )}
         >
           ✕
@@ -67,7 +67,7 @@ export function SelfFundPanel(props: {
       >
         <span
           style={css(
-            "flex:1;font-family:var(--font-jetbrains),ui-monospace,monospace;font-size:12.5px;color:#8aa0ff;word-break:break-all;line-height:1.5;",
+            "flex:1;font-family:var(--font-jetbrains),ui-monospace,monospace;font-size:12.5px;color:#f73c68;word-break:break-all;line-height:1.5;",
           )}
         >
           {props.address}
@@ -75,7 +75,7 @@ export function SelfFundPanel(props: {
         <button
           onClick={copy}
           style={css(
-            "flex-shrink:0;padding:7px 12px;border-radius:9px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.04);color:#c8cede;font-size:11.5px;font-weight:700;cursor:pointer;transition:background .15s;",
+            "flex-shrink:0;padding:7px 12px;border-radius:9px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.04);color:#d1d1d1;font-size:11.5px;font-weight:700;cursor:pointer;transition:background .15s;",
           )}
         >
           {copied ? "Copied ✓" : "Copy"}
@@ -95,7 +95,7 @@ export function SelfFundPanel(props: {
           target="_blank"
           rel="noreferrer"
           style={css(
-            "display:flex;align-items:center;justify-content:center;padding:11px;border-radius:11px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.03);color:#e9ecf4;font-size:13.5px;font-weight:700;text-decoration:none;",
+            "display:flex;align-items:center;justify-content:center;padding:11px;border-radius:11px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.03);color:#f6f6f6;font-size:13.5px;font-weight:700;text-decoration:none;",
           )}
         >
           HL faucet ↗
@@ -104,7 +104,7 @@ export function SelfFundPanel(props: {
           onClick={props.onConfirm}
           disabled={props.busy}
           style={css(
-            `padding:11px;border-radius:11px;border:none;background:${C.accent};color:#0b0d13;font-size:13.5px;font-weight:800;cursor:pointer;` +
+            `padding:11px;border-radius:11px;border:none;background:${C.accent};color:#ffffff;font-size:13.5px;font-weight:800;cursor:pointer;` +
               (props.busy ? "opacity:0.5;cursor:not-allowed;" : ""),
           )}
         >
@@ -117,7 +117,7 @@ export function SelfFundPanel(props: {
           href={hlExplorerAddress(props.address)}
           target="_blank"
           rel="noreferrer"
-          style={css("font-size:11px;font-weight:700;color:#8a93a6;text-decoration:none;")}
+          style={css("font-size:11px;font-weight:700;color:#777777;text-decoration:none;")}
         >
           View account on HL explorer ↗
         </a>
@@ -131,12 +131,12 @@ function Step({ n, label }: { n: number; label: string }) {
     <div style={css("display:flex;align-items:center;gap:10px;")}>
       <span
         style={css(
-          "flex-shrink:0;width:20px;height:20px;border-radius:50%;background:rgba(227,173,70,0.16);color:#e8c885;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;",
+          "flex-shrink:0;width:20px;height:20px;border-radius:50%;background:rgba(253,172,89,0.16);color:#fdac59;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;",
         )}
       >
         {n}
       </span>
-      <span style={css("font-size:12.5px;color:#c8cede;font-weight:600;")}>{label}</span>
+      <span style={css("font-size:12.5px;color:#d1d1d1;font-weight:600;")}>{label}</span>
     </div>
   );
 }

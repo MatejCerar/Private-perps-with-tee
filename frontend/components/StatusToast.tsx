@@ -47,17 +47,17 @@ export function StatusToast({
   }
 
   const border = done
-    ? "rgba(46,206,111,0.4)"
+    ? "rgba(97,184,84,0.4)"
     : error
-      ? "rgba(255,93,95,0.4)"
+      ? "rgba(238,76,69,0.4)"
       : "rgba(255,255,255,0.1)";
 
   const iconWrap =
     "flex-shrink:0;width:30px;height:30px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:800;" +
     (done
-      ? `background:${C.green};color:#08110b;animation:hypePop .4s ease;`
+      ? `background:${C.green};color:#1a1a1a;animation:hypePop .4s ease;`
       : error
-        ? `background:${C.red};color:#2a0d0d;animation:hypePop .4s ease;`
+        ? `background:${C.red};color:#1a1a1a;animation:hypePop .4s ease;`
         : `border:2px solid ${C.accent};border-top-color:transparent;animation:hypeSpin .8s linear infinite;`);
 
   const pipe: { label: string; reached: boolean }[] = [
@@ -70,7 +70,7 @@ export function StatusToast({
   return (
     <div
       style={css(
-        `position:fixed;right:22px;bottom:22px;z-index:70;width:384px;max-width:calc(100vw - 44px);border-radius:16px;border:1px solid ${border};background:linear-gradient(180deg,#161b26,#12161f);box-shadow:0 30px 70px -24px rgba(0,0,0,0.9);overflow:hidden;animation:hypeRise 0.28s ease;`,
+        `position:fixed;right:22px;bottom:22px;z-index:70;width:384px;max-width:calc(100vw - 44px);border-radius:16px;border:1px solid ${border};background:linear-gradient(180deg,#232323,#1a1a1a);box-shadow:0 30px 70px -24px rgba(0,0,0,0.9);overflow:hidden;animation:hypeRise 0.28s ease;`,
       )}
     >
       <div style={css("display:flex;align-items:flex-start;gap:10px;padding:14px 16px;border-bottom:1px solid rgba(255,255,255,0.06);")}>
@@ -78,7 +78,7 @@ export function StatusToast({
         <div style={css("flex:1;min-width:0;")}>
           <div
             style={css(
-              "font-size:13.5px;font-weight:800;color:#e9ecf4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:1px;",
+              "font-size:13.5px;font-weight:800;color:#f6f6f6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:1px;",
             )}
           >
             {run.title}
@@ -86,8 +86,8 @@ export function StatusToast({
           <div
             style={css(
               error
-                ? "font-size:12.5px;color:#ff8082;line-height:1.45;word-break:break-word;"
-                : "font-size:11.5px;color:#8a93a6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;",
+                ? "font-size:12.5px;color:#f2726c;line-height:1.45;word-break:break-word;"
+                : "font-size:11.5px;color:#777777;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;",
             )}
           >
             {done ? (
@@ -100,7 +100,7 @@ export function StatusToast({
                       href={hlExplorerUrl}
                       target="_blank"
                       rel="noreferrer"
-                      style={css("color:#8aa0ff;font-weight:700;text-decoration:none;")}
+                      style={css("color:#f73c68;font-weight:700;text-decoration:none;")}
                     >
                       View on HL ↗
                     </a>
@@ -118,7 +118,7 @@ export function StatusToast({
           <button
             onClick={onDismiss}
             style={css(
-              "width:26px;height:26px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);background:transparent;color:#8a93a6;font-size:13px;cursor:pointer;",
+              "width:26px;height:26px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);background:transparent;color:#777777;font-size:13px;cursor:pointer;",
             )}
           >
             ✕
@@ -132,17 +132,17 @@ export function StatusToast({
           const dotStyle =
             "flex-shrink:0;width:18px;height:18px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;" +
             (st === "done"
-              ? `background:${C.green};color:#08110b;`
+              ? `background:${C.green};color:#1a1a1a;`
               : st === "fail"
-                ? `background:${C.red};color:#2a0d0d;`
+                ? `background:${C.red};color:#1a1a1a;`
                 : st === "active"
                   ? `border:2px solid ${C.accent};border-top-color:transparent;animation:hypeSpin .8s linear infinite;`
-                  : "border:2px solid #2c3340;");
+                  : "border:2px solid #232323;");
           const labelStyle =
             "font-size:12.5px;font-weight:" +
             (st === "active" ? "800" : "600") +
             ";color:" +
-            (st === "todo" ? "#5f6779" : "#c8cede") +
+            (st === "todo" ? "#414141" : "#d1d1d1") +
             ";";
           const showLink = i === 1 && !!run.txHash;
           return (
@@ -167,7 +167,7 @@ export function StatusToast({
       <button
         onClick={onToggleDetails}
         style={css(
-          "display:flex;align-items:center;justify-content:center;gap:6px;width:100%;padding:9px;border:none;border-top:1px solid rgba(255,255,255,0.06);background:transparent;color:#8a93a6;font-size:11.5px;font-weight:700;cursor:pointer;",
+          "display:flex;align-items:center;justify-content:center;gap:6px;width:100%;padding:9px;border:none;border-top:1px solid rgba(255,255,255,0.06);background:transparent;color:#777777;font-size:11.5px;font-weight:700;cursor:pointer;",
         )}
       >
         Details{" "}
@@ -193,33 +193,33 @@ export function StatusToast({
                 key={q.label}
                 style={css(
                   "display:flex;align-items:center;gap:8px;color:" +
-                    (q.reached ? C.green : "#5f6779") +
+                    (q.reached ? C.green : "#414141") +
                     ";",
                 )}
               >
                 <span>{q.reached ? "✔" : "·"}</span>
-                <span style={css("color:#8a93a6;")}>{q.label}</span>
+                <span style={css("color:#777777;")}>{q.label}</span>
               </div>
             ))}
           </div>
           <div
             style={css(
-              "margin-top:11px;padding-top:11px;border-top:1px solid rgba(255,255,255,0.07);font-size:10.5px;line-height:1.7;color:#6f7789;",
+              "margin-top:11px;padding-top:11px;border-top:1px solid rgba(255,255,255,0.07);font-size:10.5px;line-height:1.7;color:#414141;",
             )}
           >
             <div>
               instructionId{" "}
-              <span style={css("color:#8aa0ff;word-break:break-all;")}>
+              <span style={css("color:#f73c68;word-break:break-all;")}>
                 {run.instructionId ?? "—"}
               </span>
             </div>
             <div>
-              flareTx <span style={css("color:#8aa0ff;word-break:break-all;")}>{run.txHash ?? "—"}</span>
+              flareTx <span style={css("color:#f73c68;word-break:break-all;")}>{run.txHash ?? "—"}</span>
             </div>
             {run.resultJson && (
               <div
                 style={css(
-                  "white-space:pre-wrap;word-break:break-all;margin-top:6px;color:#7f8798;",
+                  "white-space:pre-wrap;word-break:break-all;margin-top:6px;color:#777777;",
                 )}
               >
                 {run.resultJson}

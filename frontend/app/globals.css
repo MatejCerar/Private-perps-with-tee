@@ -12,18 +12,18 @@ body {
 }
 
 body {
-  background: #080a0f;
-  color: #e9ecf4;
+  background: #101010;
+  color: #f6f6f6;
   font-family: var(--font-manrope), system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
 a {
-  color: #8aa0ff;
+  color: #f73c68;
   text-decoration: none;
 }
 a:hover {
-  color: #a7b6ff;
+  color: #fd6f8c;
 }
 
 input,
@@ -36,7 +36,7 @@ input:focus {
 }
 
 ::selection {
-  background: rgba(124, 140, 255, 0.3);
+  background: rgba(230,32,88, 0.3);
 }
 
 ::-webkit-scrollbar {
@@ -91,6 +91,48 @@ input:focus {
   100% {
     transform: scale(1);
     opacity: 1;
+  }
+}
+
+/* Terminal layout: 3 columns on desktop, stacked on mobile. The inline-style
+   css() helper cannot express media queries, so the responsive grid lives here. */
+.terminal {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr) 320px;
+  gap: 16px;
+  align-items: stretch;
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 16px 20px 60px;
+}
+.terminal-left {
+  min-width: 0;
+  height: calc(100vh - 170px);
+  position: sticky;
+  top: 116px;
+}
+.terminal-center {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.terminal-right {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+@media (max-width: 1000px) {
+  .terminal {
+    grid-template-columns: 1fr;
+    padding: 14px 16px 60px;
+  }
+  .terminal-left {
+    height: auto;
+    max-height: 320px;
+    position: static;
+    top: auto;
   }
 }
 

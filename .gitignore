@@ -38,3 +38,15 @@ DEPLOYMENT.md
 config/**/*.log
 # Per-deployment wallet registry (written by tools/cmd/provision-wallet)
 config/wallet-registry.json
+
+# Direct-TEE relayer binary + per-deployment TEE registration state
+tools/relayer
+config/register-tee.state
+
+# Diff artifacts and stray root lockfile
+*.patch
+/package-lock.json
+
+# e2e harness is a separately-cloned repo (its own .git); not vendored here.
+# Its Coston2 indexer fixes are documented in docs/DEPLOY.md.
+/e2e/
