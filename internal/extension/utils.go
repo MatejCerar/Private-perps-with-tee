@@ -64,6 +64,15 @@ func getLogFromBody(body []byte) string {
 type processorFunc func(teetypes.Action, *instruction.DataFixed) teetypes.ActionResult
 
 func (e *Extension) handleAsync(action teetypes.Action, df *instruction.DataFixed, processor processorFunc) (int, []byte) {
+	// Proxy-less Direct-TEE: run the processor inline and return the final result
+	// in the HTTP response, so the relayer reads it straight from /action (no
+	// node->proxy delivery, no signing policy, no indexer needed).
+	if config.SyncResult {
+		result := processor(action, df)
+		body, _ := json.Marshal(result)
+		return http.StatusOK, body
+	}
+
 	ar := teetypes.ActionResult{
 		ID:            action.Data.ID,
 		SubmissionTag: action.Data.SubmissionTag,

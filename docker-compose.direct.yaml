@@ -1,0 +1,20 @@
+# Proxy-less Direct-TEE override.
+#
+# Runs ONLY the enclave (extension-tee), built from this repo, with the enclave
+# answering POST /action synchronously (HL_SYNC_RESULT=true). No ext-proxy, no
+# redis, no indexer, no signing policy, no RPC backfill - the relayer talks
+# straight to :7702 and reads the result back. PROXY_URL points at a dead port so
+# the node's queue poller no-ops (same pattern as the other proxy-less TEE nodes
+# on this host). Bring up with:
+#   docker compose -f docker-compose.yaml -f docker-compose.coston2.yaml \
+#     -f docker-compose.direct.yaml up -d --build --no-deps extension-tee
+services:
+  extension-tee:
+    build:
+      context: .
+      dockerfile: Dockerfile.selfcontained
+    environment:
+      - HL_SYNC_RESULT=true
+      - PROXY_URL=http://127.0.0.1:1
+    ports:
+      - "127.0.0.1:7702:7702"

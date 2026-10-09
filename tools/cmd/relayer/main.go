@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -128,19 +129,26 @@ func buildAction(cmd string, user common.Address, payload []byte) (teetypes.Acti
 	return a, id, nil
 }
 
-// submit posts the action to the extension and returns the action id.
-func (c config) submit(a teetypes.Action) error {
+// resultCache holds synchronous /action results keyed by action id, so the FE's
+// poll (/tee/result/{id}) can read them back without a proxy.
+var resultCache sync.Map
+
+// submit posts the action to the extension and returns the response body. With
+// the enclave in sync mode (HL_SYNC_RESULT=true) that body is the final
+// ActionResult; otherwise it is the pending stub.
+func (c config) submit(a teetypes.Action) ([]byte, error) {
+	client := http.Client{Timeout: 120 * time.Second}
 	body, _ := json.Marshal(a)
-	resp, err := http.Post(c.extensionURL+"/action", "application/json", bytes.NewReader(body))
+	resp, err := client.Post(c.extensionURL+"/action", "application/json", bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("post to extension: %w", err)
+		return nil, fmt.Errorf("post to extension: %w", err)
 	}
 	defer resp.Body.Close()
 	rb, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("extension returned %d: %s", resp.StatusCode, string(rb))
+		return nil, fmt.Errorf("extension returned %d: %s", resp.StatusCode, string(rb))
 	}
-	return nil
+	return rb, nil
 }
 
 type apiError struct {
@@ -300,9 +308,12 @@ func (c config) submitCmd(cmd string, user common.Address, payload []byte) (any,
 	if err != nil {
 		return nil, http.StatusInternalServerError, err
 	}
-	if err := c.submit(a); err != nil {
+	body, err := c.submit(a)
+	if err != nil {
 		return nil, http.StatusBadGateway, err
 	}
+	// Cache the (sync) result so /tee/result/{id} can serve it without a proxy.
+	resultCache.Store(id.Hex(), json.RawMessage(body))
 	return map[string]string{"id": id.Hex(), "status": "pending"}, http.StatusOK, nil
 }
 
@@ -312,6 +323,15 @@ func (c config) handleResult(_ http.ResponseWriter, r *http.Request) (any, int, 
 	id := r.PathValue("id")
 	if !strings.HasPrefix(id, "0x") || len(id) != 66 {
 		return nil, http.StatusBadRequest, fmt.Errorf("invalid action id")
+	}
+	// Sync mode: the ActionResult was cached at submit time. Wrap it under
+	// "result" so the frontend sees the same shape as the proxy's response.
+	if v, ok := resultCache.Load(id); ok {
+		return map[string]any{"result": v}, http.StatusOK, nil
+	}
+	// Fallback: poll the proxy (only used if PROXY_URL is set and running).
+	if c.proxyURL == "" {
+		return map[string]string{"status": "pending"}, http.StatusAccepted, nil
 	}
 	for _, tag := range []string{"submit", "threshold", "end"} {
 		url := fmt.Sprintf("%s/action/result/%s?submissionTag=%s", c.proxyURL, id, tag)
