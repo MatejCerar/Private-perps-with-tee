@@ -16,5 +16,14 @@ services:
     environment:
       - HL_SYNC_RESULT=true
       - PROXY_URL=http://127.0.0.1:1
+      # Private pooled/delayed funding (the point of Private Perps). Without these
+      # the enclave funds synchronously; with them a deposit returns pendingFunding
+      # and the background batch funder draws from the treasury after a delay.
+      - HL_PRIVATE_DEPOSIT=true
+      - HL_DENOMINATIONS=25,100,500
+      - HL_BATCH_MIN=1
+      - HL_FUND_DELAY_MIN_SECONDS=20
+      - HL_FUND_DELAY_MAX_SECONDS=60
+      - HL_FUND_TICK_SECONDS=5
     ports:
       - "127.0.0.1:7702:7702"
