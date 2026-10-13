@@ -301,24 +301,21 @@ export default function Home() {
       }
       setRun({ phase: "signing", stepReached: 0, detailsOpen: false, ...meta });
       try {
-        const hash = await writeCall();
-        setRun((s) => (s ? { ...s, phase: "mining", stepReached: 1, txHash: hash } : s));
-
-        const receipt = await publicClient.waitForTransactionReceipt({ hash });
-        if (receipt.status !== "success") throw new Error("transaction reverted on-chain");
-
-        // Direct-TEE: deliver via the relayer and poll its action id. Otherwise
-        // use the on-chain FTDC instruction id from the receipt.
         let response;
         if (RELAYER_ENABLED && opts?.relayerDeliver) {
+          // Direct-TEE: there is no registered TEE to route an on-chain
+          // instruction to, so skip the on-chain tx entirely and deliver straight
+          // to the enclave via the relayer. The enclave derives the caller's HL
+          // account from the connected address and funds from the treasury.
+          setRun((s) => (s ? { ...s, phase: "relaying", stepReached: 2 } : s));
           const actionId = await opts.relayerDeliver();
-          setRun((s) =>
-            s
-              ? { ...s, phase: "relaying", stepReached: 2, instructionId: actionId as `0x${string}` }
-              : s,
-          );
+          setRun((s) => (s ? { ...s, instructionId: actionId as `0x${string}` } : s));
           response = await pollRelayerResult(actionId);
         } else {
+          const hash = await writeCall();
+          setRun((s) => (s ? { ...s, phase: "mining", stepReached: 1, txHash: hash } : s));
+          const receipt = await publicClient.waitForTransactionReceipt({ hash });
+          if (receipt.status !== "success") throw new Error("transaction reverted on-chain");
           const instructionId = extractInstructionId(receipt);
           setRun((s) => (s ? { ...s, phase: "relaying", stepReached: 2, instructionId } : s));
           response = await pollResult(instructionId);
@@ -335,7 +332,8 @@ export default function Home() {
         }
 
         // Optional on-chain post-step (withdraw: release TestUSDC on Coston).
-        if (opts?.onSlip) {
+        // Skipped in Direct-TEE mode: there is no on-chain escrow to release.
+        if (opts?.onSlip && !(RELAYER_ENABLED && opts?.relayerDeliver)) {
           setRun((s) => (s ? { ...s, phase: "releasing", stepReached: 3, resultJson } : s));
           await opts.onSlip(decoded);
         }
