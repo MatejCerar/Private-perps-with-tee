@@ -12,7 +12,11 @@ function fmtCountdown(seconds: number): string {
   const s = Math.max(0, Math.round(seconds));
   if (s >= 90) return `~${Math.round(s / 60)} min`;
   if (s > 0) return `~${s} sec`;
-  return "any moment";
+  return "finalizing…";
+}
+
+function shortAddr(a?: string): string {
+  return a && a.length > 10 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a ?? "";
 }
 
 export function PooledDepositPanel(props: {
@@ -104,6 +108,19 @@ export function PooledDepositPanel(props: {
         funded together after a randomized delay. Your balance stays at $0.00 until funding lands,
         then it updates automatically.
       </div>
+
+      {props.address && (
+        <div
+          style={css(
+            "display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 11px;border-radius:10px;background:rgba(0,0,0,0.25);border:1px solid rgba(255,255,255,0.06);margin-bottom:12px;",
+          )}
+        >
+          <span style={css("font-size:11px;color:#777777;font-weight:600;")}>Your HL account</span>
+          <span style={css("font-size:12.5px;color:#d1d1d1;font-family:monospace;")}>
+            {shortAddr(props.address)}
+          </span>
+        </div>
+      )}
 
       <div style={css("display:grid;grid-template-columns:1fr 1fr;gap:9px;")}>
         <a
