@@ -287,6 +287,7 @@ func buildExtension(extensionPort, signPort int, f hl.Factory, seed []byte) *Ext
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /state", e.stateHandler)
 	mux.HandleFunc("GET /account", e.accountHandler)
+	mux.HandleFunc("GET /shards", e.shardsHandler)
 	mux.HandleFunc("POST /action", e.actionHandler)
 	e.Server = &http.Server{Addr: fmt.Sprintf(":%d", extensionPort), Handler: mux}
 	return e

@@ -105,6 +105,42 @@ type aggregateAccountResp struct {
 	OpenOrders       []hl.OpenOrder `json:"openOrders"`
 }
 
+// shardInfo is one shard account's identity and balance, for the operator debug
+// view (GET /shards). It intentionally reveals the per-shard HL addresses, so it
+// is a DEBUG/operator tool - do not expose it publicly in a real deployment, since
+// listing a user's shard addresses defeats the unlinkability the split provides.
+type shardInfo struct {
+	Shard      int     `json:"shard"`
+	HLAddress  string  `json:"hlAddress"`
+	BalanceUsd float64 `json:"balanceUsd"`
+}
+
+// shardsHandler serves GET /shards?user=0x.. listing each of the user's shard
+// accounts (index, HL address, balance), so you can see how a deposit fanned out
+// and open each account on the Hyperliquid explorer.
+func (e *Extension) shardsHandler(w http.ResponseWriter, r *http.Request) {
+	userHex := r.URL.Query().Get("user")
+	if userHex == "" {
+		http.Error(w, "missing user query param", http.StatusBadRequest)
+		return
+	}
+	user := common.HexToAddress(userHex)
+	depth := e.shardDepth(r.Context(), user)
+	out := make([]shardInfo, 0, depth)
+	for i := 0; i < depth; i++ {
+		acct, err := e.accountForShard(user, i)
+		if err != nil {
+			continue
+		}
+		bal, _ := hlTotalUSD(r.Context(), acct)
+		out = append(out, shardInfo{Shard: i, HLAddress: acct.Address(), BalanceUsd: bal})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(out); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
 // accountHandler serves GET /account?user=0x.. with the merged aggregate view
 // across the user's shards. NOTE: this returns a user's trading activity keyed by
 // Flare address and is currently unauthenticated - fine behind the trusted local
