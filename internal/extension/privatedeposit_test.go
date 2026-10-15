@@ -259,10 +259,10 @@ func TestReconcileSkipsInFlightWithdraw(t *testing.T) {
 
 func TestDepositPoolDelayInRange(t *testing.T) {
 	p := NewDepositPool(10*time.Second, 20*time.Second, 1)
-	if !p.Enqueue(paddr(1), 100) {
+	if !p.Enqueue(paddr(1), 0, 100) {
 		t.Fatal("first enqueue should succeed")
 	}
-	if p.Enqueue(paddr(1), 100) {
+	if p.Enqueue(paddr(1), 0, 100) {
 		t.Fatal("duplicate enqueue should be rejected")
 	}
 	d := p.EstimatedDelay(paddr(1))

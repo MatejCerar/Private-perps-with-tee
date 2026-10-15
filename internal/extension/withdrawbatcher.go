@@ -65,7 +65,7 @@ func (e *Extension) drainDuePayouts(ctx context.Context) int {
 
 	done := 0
 	for _, it := range batch {
-		if e.payoutOne(ctx, it.User, it.Denom) {
+		if e.payoutOne(ctx, it.User, it.Shard, it.Denom) {
 			done++
 		}
 	}
@@ -76,16 +76,16 @@ func (e *Extension) drainDuePayouts(ctx context.Context) int {
 // payoutOne unwinds a single user's HL account to the treasury, holding the user
 // lock. The ledger was debited at request time; on success the entry is cleared, on
 // failure the ledger is refunded and the entry returns to pending for retry.
-func (e *Extension) payoutOne(ctx context.Context, user common.Address, denom float64) bool {
+func (e *Extension) payoutOne(ctx context.Context, user common.Address, shard int, denom float64) bool {
 	mu := e.userMutex(user)
 	mu.Lock()
 	defer mu.Unlock()
 	if err := e.reclaimToTreasury(ctx, user, denom); err != nil {
 		logger.Warnf("payout batcher: reclaim for %s failed (will retry): %v", user.Hex(), err)
-		e.withdrawPool.Fail(user)
+		e.withdrawPool.Fail(user, shard)
 		return false
 	}
-	e.withdrawPool.Complete(user)
+	e.withdrawPool.Complete(user, shard)
 	logger.Infof("payout batcher: settled withdraw for %s (%.2f reclaimed privately)", user.Hex(), denom)
 	return true
 }

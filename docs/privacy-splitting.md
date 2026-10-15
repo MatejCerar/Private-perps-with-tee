@@ -29,13 +29,22 @@ no single account is an amount/aggregate fingerprint. Gated by `HL_SPLIT_DEPOSIT
 cache keyed by `(user, i)`. A per-user `shardCount` map (how many shards a user has,
 grown as deposits split). Config: `HL_SPLIT_DEPOSITS`, `HL_MAX_SHARDS` (e.g. 15).
 
-**Layer 2 - split deposit + funding.** In `processDepositVault`, when splitting is
-on: `chunks = splitIntoDenoms(usd, Denominations, maxShards, rnd)`; assign each
-chunk a shard index; enqueue each `(user, shardIndex, denom)` into the deposit pool.
-Requires the `DepositPool` to hold **multiple entries per user** (today it's one):
-re-key its map by `(user, shardIndex)` or `map[user][]*pendingFunding`. The batch
-funder funds each shard account from the treasury (existing `fundUserAccount`, but
-to the shard address), credits the user ledger by the chunk.
+**Layer 2 - split deposit + funding (+ denomination ladder + remainder).**
+- Denomination ladder widened to `HL_DENOMINATIONS=10,25,50,100,500` (min `$10`),
+  so deposits decompose into many common small chunks and remainders are small.
+- Allow **any** deposit amount ≥ `$10` (relax the "must equal a denomination"
+  check). `chunks = splitIntoDenoms(usd, Denominations, maxShards, rnd)` funds the
+  denominable part; the leftover `remainder = usd - Σchunks` (always `< $10`, e.g.
+  `$37 → 25+10, remainder $2`) is **credited to the user ledger as un-deposited
+  credit** - it never goes to HL, so no odd amount leaks. Display it: a line in the
+  deposit modal before confirm ("$37 → $35 funded privately across N accounts · $2
+  kept as credit") and a "+ $X credit" note under **Available** in the money panel.
+- Assign each chunk a shard index; enqueue each `(user, shardIndex, denom)` into the
+  deposit pool. Requires the `DepositPool` to hold **multiple entries per user**
+  (today it's one): re-key its map by `(user, shardIndex)` or
+  `map[user][]*pendingFunding`. The batch funder funds each shard account from the
+  treasury (existing `fundUserAccount`, to the shard address) and credits the user
+  ledger by the chunk.
 
 **Layer 3 - aggregated read.** `stateHandler` / `fetchAccount` sum across the user's
 shards: total balance = Σ shard balances; positions = merge same-coin positions

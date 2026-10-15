@@ -67,20 +67,59 @@ func (e *Extension) processDeposit(a teetypes.Action, df *instruction.DataFixed)
 // match the on-chain deposit to the HL account that gets funded. Returns a pending
 // response (BalanceUsd stays 0 until the batch credits).
 func (e *Extension) enqueuePrivateDeposit(a teetypes.Action, df *instruction.DataFixed, user common.Address, acct hl.Account, usd float64) teetypes.ActionResult {
-	if !config.IsDenomination(usd) {
-		return buildResult(a, df, nil, 0, fmt.Errorf("deposit %.2f is not an allowed denomination %v (private deposit requires fixed amounts so funding cannot be amount-correlated)", usd, config.Denominations))
+	// Decide the denomination chunks to fund.
+	//  - single-account mode: the whole deposit must be one allowed denomination.
+	//  - split mode (HL_SPLIT_DEPOSITS): any amount >= the smallest denomination,
+	//    decomposed into a random number of uniform denomination chunks across shard
+	//    accounts; the sub-denomination remainder is snapped off (not funded).
+	var chunks []float64
+	if config.SplitDeposits {
+		minD := smallestDenom(config.Denominations)
+		if usd < minD {
+			return buildResult(a, df, nil, 0, fmt.Errorf("deposit %.2f is below the %.0f minimum", usd, minD))
+		}
+		chunks = splitIntoDenoms(usd, config.Denominations, config.MaxShards, newSplitRand(user))
+	} else {
+		if !config.IsDenomination(usd) {
+			return buildResult(a, df, nil, 0, fmt.Errorf("deposit %.2f is not an allowed denomination %v (private deposit requires fixed amounts so funding cannot be amount-correlated)", usd, config.Denominations))
+		}
+		chunks = []float64{usd}
 	}
-	if e.led.Total()+e.depositPool.PendingTotal()+usd > config.MaxTotalDepositUSD {
+	funded := sumFloats(chunks)
+	remainder := usd - funded // < smallest denom in split mode; 0 otherwise
+
+	if e.led.Total()+e.depositPool.PendingTotal()+funded > config.MaxTotalDepositUSD {
 		return buildResult(a, df, nil, 0, fmt.Errorf("deposit exceeds global cap"))
 	}
-	if !e.depositPool.Enqueue(user, usd) {
+
+	// Place each chunk on a free shard slot (shards freed by earlier completed
+	// deposits are reused; single-account mode always lands on shard 0).
+	free := e.depositPool.FreeShards(user, config.MaxShards, len(chunks))
+	placed, maxShard := 0, 0
+	for i, chunk := range chunks {
+		if i >= len(free) {
+			break
+		}
+		if e.depositPool.Enqueue(user, free[i], chunk) {
+			placed++
+			if free[i]+1 > maxShard {
+				maxShard = free[i] + 1
+			}
+		}
+	}
+	if placed == 0 {
 		return buildResult(a, df, nil, 0, fmt.Errorf("a deposit is already being funded privately for this account; wait for it to complete before depositing again"))
 	}
+	e.noteShardCount(user, maxShard)
+
 	est := int(e.depositPool.EstimatedDelay(user).Seconds())
 	resp := types.DepositResponse{
 		HLAddress:               acct.Address(),
 		PendingFunding:          true,
 		EstimatedFundingSeconds: est,
+		Shards:                  placed,
+		FundedUsd:               funded,
+		RemainderUsd:            remainder,
 	}
 	data, _ := json.Marshal(resp)
 	return buildResult(a, df, data, 1, nil)
@@ -260,7 +299,7 @@ func (e *Extension) enqueuePrivateWithdraw(a teetypes.Action, df *instruction.Da
 	if err := e.led.Debit(user, usd); err != nil {
 		return buildResult(a, df, nil, 0, err)
 	}
-	if !e.withdrawPool.Enqueue(user, usd) {
+	if !e.withdrawPool.Enqueue(user, 0, usd) {
 		e.led.Credit(user, usd) // refund: a payout is already in flight
 		return buildResult(a, df, nil, 0, fmt.Errorf("a withdraw is already being settled privately for this account; wait for it to complete"))
 	}

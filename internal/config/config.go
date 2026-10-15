@@ -113,7 +113,7 @@ var (
 	// Denominations are the only deposit amounts accepted when PrivateDeposit is on
 	// (USD). Uniform amounts stop an observer re-linking a user by matching the
 	// on-chain deposit amount to the HL funding amount. Empty disables the check.
-	Denominations = []float64{25, 100, 500}
+	Denominations = []float64{10, 25, 50, 100, 500}
 
 	// BatchMin is the minimum number of matured deposits funded together (the
 	// anonymity set). 1 = no anonymity; raise it for real privacy.
@@ -128,6 +128,13 @@ var (
 	// failing for this long (e.g. the treasury could not fund it), so an
 	// un-fundable entry never blocks the account forever. 0 disables expiry.
 	MaxFundingAgeSeconds = 120
+
+	// SplitDeposits (HL_SPLIT_DEPOSITS) spreads each deposit across several
+	// standalone shard accounts for stronger unlinkability. Off (default) keeps the
+	// original one-account-per-user behaviour.
+	SplitDeposits = false
+	// MaxShards caps how many shard accounts one deposit spreads across.
+	MaxShards = 15
 )
 
 // LoadArbConfig reads Arbitrum-side settings for the bridge funding path.
@@ -226,6 +233,16 @@ func LoadArbConfig() {
 	if v := os.Getenv("HL_MAX_FUNDING_AGE_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			MaxFundingAgeSeconds = n
+		}
+	}
+	if v := os.Getenv("HL_SPLIT_DEPOSITS"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			SplitDeposits = b
+		}
+	}
+	if v := os.Getenv("HL_MAX_SHARDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
+			MaxShards = n
 		}
 	}
 }

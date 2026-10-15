@@ -22,8 +22,8 @@ import (
 // This is the single funding origin for private deposits, which is what makes them
 // unlinkable: the money reaches the account from the common treasury, decorrelated
 // in time/amount from the depositor's on-chain deposit. Caller holds the user lock.
-func (e *Extension) fundUserAccount(ctx context.Context, user common.Address, denom float64) error {
-	acct, err := e.accountFor(user)
+func (e *Extension) fundUserAccount(ctx context.Context, user common.Address, shard int, denom float64) error {
+	acct, err := e.accountForShard(user, shard)
 	if err != nil {
 		return fmt.Errorf("deriving account: %w", err)
 	}
@@ -67,7 +67,7 @@ func (e *Extension) drainDueBatch(ctx context.Context) int {
 
 	funded := 0
 	for _, it := range batch {
-		if e.fundOne(ctx, it.User, it.Denom) {
+		if e.fundOne(ctx, it.User, it.Shard, it.Denom) {
 			funded++
 		}
 	}
@@ -78,18 +78,18 @@ func (e *Extension) drainDueBatch(ctx context.Context) int {
 // fundOne funds a single user's account and credits the ledger, holding the user
 // lock across fund+credit (so reconciliation TryLock-skips it and the ledger is
 // never credited twice). On failure the entry returns to pending for retry.
-func (e *Extension) fundOne(ctx context.Context, user common.Address, denom float64) bool {
+func (e *Extension) fundOne(ctx context.Context, user common.Address, shard int, denom float64) bool {
 	mu := e.userMutex(user)
 	mu.Lock()
 	defer mu.Unlock()
-	if err := e.fundUserAccount(ctx, user, denom); err != nil {
-		logger.Warnf("batch funder: funding %s failed (will retry): %v", user.Hex(), err)
-		e.depositPool.Fail(user)
+	if err := e.fundUserAccount(ctx, user, shard, denom); err != nil {
+		logger.Warnf("batch funder: funding %s shard %d failed (will retry): %v", user.Hex(), shard, err)
+		e.depositPool.Fail(user, shard)
 		return false
 	}
 	e.led.Credit(user, denom)
-	e.depositPool.Complete(user)
-	logger.Infof("batch funder: credited %s with %.2f (privately funded)", user.Hex(), denom)
+	e.depositPool.Complete(user, shard)
+	logger.Infof("batch funder: credited %s shard %d with %.2f (privately funded)", user.Hex(), shard, denom)
 	return true
 }
 

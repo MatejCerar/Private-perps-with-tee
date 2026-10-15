@@ -931,8 +931,8 @@ function PrivacyNote() {
         )}
       />
       <span style={css("color:#fd6f8c;")}>
-        Private mode: deposits are pooled and your account is funded on a short,
-        randomized delay.
+        Private mode: deposits are split across multiple accounts and funded in
+        batches after a short, randomized delay.
       </span>
     </div>
   );

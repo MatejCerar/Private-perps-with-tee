@@ -84,6 +84,13 @@ type DepositResponse struct {
 	// "funded privately in ~EstimatedFundingSeconds" state.
 	PendingFunding          bool `json:"pendingFunding,omitempty"`
 	EstimatedFundingSeconds int  `json:"estimatedFundingSeconds,omitempty"`
+
+	// Split deposit (HL_SPLIT_DEPOSITS): how many shard accounts this deposit spread
+	// across, the funded (denominable) total, and the snapped sub-denomination
+	// remainder that was not funded.
+	Shards       int     `json:"shards,omitempty"`
+	FundedUsd    float64 `json:"fundedUsd,omitempty"`
+	RemainderUsd float64 `json:"remainderUsd,omitempty"`
 }
 
 type OrderResponse struct {

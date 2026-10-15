@@ -71,6 +71,13 @@ type Extension struct {
 
 	accounts map[common.Address]hl.Account // cache: flare addr -> HL account
 
+	// shardAccounts caches split "shard" accounts (HL_SPLIT_DEPOSITS); shard 0 is
+	// the primary account (== accounts[user]), shards >= 1 are fresh standalone
+	// accounts. shardCount records how many shards a user has funded, for the
+	// aggregated balance/positions read.
+	shardAccounts map[shardKey]hl.Account
+	shardCount    map[common.Address]int
+
 	// userLocks serializes per-user ops (one in-flight deposit/withdraw/order
 	// chain per user) so same-user txs don't race on the user's own Arbitrum
 	// nonce and the ledger isn't mutated mid-reconcile. Reconciliation TryLocks
@@ -271,6 +278,8 @@ func buildExtension(extensionPort, signPort int, f hl.Factory, seed []byte) *Ext
 		keyer:           keys.NewSeedKeyer(seed),
 		led:             ledger.New(),
 		accounts:          map[common.Address]hl.Account{},
+		shardAccounts:     map[shardKey]hl.Account{},
+		shardCount:        map[common.Address]int{},
 		reconcileStop:     make(chan struct{}),
 		batchFunderStop:   make(chan struct{}),
 		payoutBatcherStop: make(chan struct{}),
@@ -344,6 +353,54 @@ func (e *Extension) accountFor(user common.Address) (hl.Account, error) {
 	}
 	e.accounts[user] = acct
 	return acct, nil
+}
+
+// accountForShard returns the user's shard-index account. Shard 0 is the primary
+// account (identical to accountFor); shards >= 1 are fresh standalone accounts
+// derived from the master seed, used when HL_SPLIT_DEPOSITS spreads a deposit
+// across several accounts. Cached. In tee-wallet mode (no raw-key derivation)
+// sharding is unavailable, so every shard maps to the primary account.
+func (e *Extension) accountForShard(user common.Address, shard int) (hl.Account, error) {
+	if shard <= 0 || e.signerFactory != nil {
+		return e.accountFor(user)
+	}
+	key := shardKey{user, shard}
+	e.mu.RLock()
+	a, ok := e.shardAccounts[key]
+	e.mu.RUnlock()
+	if ok {
+		return a, nil
+	}
+	priv, err := keys.DeriveShardKey(e.masterSeed, user, shard)
+	if err != nil {
+		return nil, err
+	}
+	addr := crypto.PubkeyToAddress(priv.PublicKey).Hex()
+	acct := e.factory.Account(priv, addr)
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.shardAccounts == nil {
+		e.shardAccounts = map[shardKey]hl.Account{}
+	}
+	if existing, ok := e.shardAccounts[key]; ok {
+		return existing, nil
+	}
+	e.shardAccounts[key] = acct
+	return acct, nil
+}
+
+// noteShardCount records that the user now uses at least n shard accounts, so the
+// aggregated read (Layer 3) knows how many shards to sum across.
+func (e *Extension) noteShardCount(user common.Address, n int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.shardCount == nil {
+		e.shardCount = map[common.Address]int{}
+	}
+	if n > e.shardCount[user] {
+		e.shardCount[user] = n
+	}
 }
 
 func (e *Extension) stateHandler(w http.ResponseWriter, r *http.Request) {
