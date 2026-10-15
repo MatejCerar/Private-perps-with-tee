@@ -165,6 +165,7 @@ func main() {
 	mux.HandleFunc("POST /tee/order", c.wrap(c.handleOrder))
 	mux.HandleFunc("POST /tee/cancel", c.wrap(c.handleCancel))
 	mux.HandleFunc("GET /tee/result/{id}", c.wrap(c.handleResult))
+	mux.HandleFunc("GET /tee/account", c.wrap(c.handleAccount))
 	mux.HandleFunc("GET /tee/health", c.wrap(c.handleHealth))
 	// CORS preflight for any /tee/* route.
 	mux.HandleFunc("OPTIONS /tee/{rest...}", c.wrap(func(http.ResponseWriter, *http.Request) (any, int, error) {
@@ -347,6 +348,27 @@ func (c config) handleResult(_ http.ResponseWriter, r *http.Request) (any, int, 
 		}
 	}
 	return map[string]string{"status": "pending"}, http.StatusAccepted, nil
+}
+
+// handleAccount proxies the enclave's aggregated-account read (merged across the
+// user's shard accounts) so the frontend can show one balance/position in split
+// mode without ever learning the shard addresses.
+func (c config) handleAccount(_ http.ResponseWriter, r *http.Request) (any, int, error) {
+	user := r.URL.Query().Get("user")
+	if !common.IsHexAddress(user) {
+		return nil, http.StatusBadRequest, fmt.Errorf("invalid or missing user address")
+	}
+	resp, err := http.Get(fmt.Sprintf("%s/account?user=%s", c.extensionURL, user))
+	if err != nil {
+		return nil, http.StatusBadGateway, fmt.Errorf("extension: %w", err)
+	}
+	defer resp.Body.Close()
+	rb, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, resp.StatusCode, fmt.Errorf("extension: %s", string(rb))
+	}
+	var out json.RawMessage = rb
+	return out, http.StatusOK, nil
 }
 
 func decode(r *http.Request, v any) error {

@@ -7,9 +7,62 @@
 // relayer's public URL to enable this path; leave it empty for the pure on-chain
 // (FCC) path.
 import type { ActionResponse } from "./tee";
+import type { HlAccount } from "./hl";
 
 export const RELAYER_URL = (process.env.NEXT_PUBLIC_RELAYER_URL ?? "").replace(/\/$/, "");
 export const RELAYER_ENABLED = /^https?:\/\//.test(RELAYER_URL);
+
+// Split mode: the deposit is spread across shard accounts the frontend must not
+// learn, so account state is read as one aggregate from the relayer (which merges
+// the shards inside the enclave) instead of querying HL directly for one address.
+export const SPLIT_MODE = (process.env.NEXT_PUBLIC_SPLIT_MODE ?? "") === "true";
+
+const n = (v: unknown): number => {
+  const x = Number(v);
+  return Number.isFinite(x) ? x : 0;
+};
+
+// fetchAggregateAccount reads the user's merged account (balance + positions +
+// open orders summed across all shards) from the relayer. Shape matches HlAccount
+// so it is a drop-in for fetchAccount().
+export async function fetchAggregateAccount(user: string): Promise<HlAccount> {
+  const res = await fetch(`${RELAYER_URL}/tee/account?user=${user}`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`relayer account failed (${res.status})`);
+  const a = (await res.json()) as {
+    spotUsdc?: unknown;
+    perpAccountValue?: unknown;
+    withdrawable?: unknown;
+    positions?: unknown[];
+    openOrders?: unknown[];
+  };
+  return {
+    spotUsdc: n(a.spotUsdc),
+    perpAccountValue: n(a.perpAccountValue),
+    withdrawable: n(a.withdrawable),
+    positions: (a.positions ?? [])
+      .map((p) => p as Record<string, unknown>)
+      .filter((p) => n(p.szi) !== 0)
+      .map((p) => ({
+        coin: String(p.coin),
+        szi: n(p.szi),
+        entryPx: n(p.entryPx),
+        unrealizedPnl: n(p.unrealizedPnl),
+        leverage: n(p.leverage),
+        marginUsed: n(p.marginUsed),
+        positionValue: n(p.positionValue),
+        liquidationPx: n(p.liquidationPx),
+      })),
+    openOrders: (a.openOrders ?? [])
+      .map((o) => o as Record<string, unknown>)
+      .map((o) => ({
+        coin: String(o.coin),
+        side: o.side === "sell" ? ("sell" as const) : ("buy" as const),
+        sz: n(o.sz),
+        limitPx: n(o.limitPx),
+        oid: n(o.oid),
+      })),
+  };
+}
 
 async function deliver(path: string, body: unknown): Promise<string> {
   const res = await fetch(`${RELAYER_URL}${path}`, {

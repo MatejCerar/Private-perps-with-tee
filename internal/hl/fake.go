@@ -12,12 +12,13 @@ type USDSend struct {
 
 type FakeAccount struct {
 	Addr        string
-	SpotBal     float64
-	PerpBal     float64
-	PosSnapshot PositionsSnapshot
-	OrderErr    error
-	WithdrawErr error
-	NextOrderID int64 // OrderID returned by PlaceOrder (defaults to 12345 when 0)
+	SpotBal       float64
+	PerpBal       float64
+	PosSnapshot   PositionsSnapshot
+	OpenOrdersList []OpenOrder
+	OrderErr      error
+	WithdrawErr   error
+	NextOrderID   int64 // OrderID returned by PlaceOrder (defaults to 12345 when 0)
 
 	SentUSD         []USDSend
 	Withdrawals     []USDSend
@@ -85,6 +86,16 @@ func (f *FakeAccount) SetAbstraction(_ context.Context, mode string) error {
 
 func (f *FakeAccount) Positions(_ context.Context) (PositionsSnapshot, error) {
 	return f.PosSnapshot, nil
+}
+
+func (f *FakeAccount) AccountSnapshot(_ context.Context) (AccountSnapshot, error) {
+	return AccountSnapshot{
+		SpotUSDC:            f.PosSnapshot.SpotUSDC,
+		PerpAccountValueUSD: f.PosSnapshot.PerpAccountValueUSD,
+		Withdrawable:        f.PerpBal,
+		Perp:                f.PosSnapshot.Perp,
+		OpenOrders:          f.OpenOrdersList,
+	}, nil
 }
 
 type FakeFactory struct {

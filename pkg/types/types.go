@@ -112,6 +112,13 @@ type WithdrawResponse struct {
 	PendingPayout          bool `json:"pendingPayout,omitempty"`
 	EstimatedPayoutSeconds int  `json:"estimatedPayoutSeconds,omitempty"`
 
+	// Split withdraw (HL_SPLIT_DEPOSITS): how many shard accounts the exit reclaims
+	// from, the amount actually being withdrawn (sum of denominable shard chunks),
+	// and any requested amount that could not be packed onto shards this round.
+	Shards       int     `json:"shards,omitempty"`
+	FundedUsd    float64 `json:"fundedUsd,omitempty"`
+	RemainderUsd float64 `json:"remainderUsd,omitempty"`
+
 	// Vault withdrawal slip (present in "vault" funding mode): the user submits
 	// these to Vault.executeWithdraw(user, token, amount, withdrawalId, signature)
 	// on Coston to release the escrowed TestUSDC.

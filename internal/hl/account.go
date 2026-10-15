@@ -45,12 +45,36 @@ type Position struct {
 	Szi           float64 `json:"szi"`
 	EntryPx       float64 `json:"entryPx"`
 	UnrealizedPnl float64 `json:"unrealizedPnl"`
+	Leverage      int     `json:"leverage"`
+	MarginUsed    float64 `json:"marginUsed"`
+	PositionValue float64 `json:"positionValue"`
+	LiquidationPx float64 `json:"liquidationPx"`
 }
 
 type PositionsSnapshot struct {
 	Perp                []Position `json:"perp"`
 	PerpAccountValueUSD float64    `json:"perpAccountValueUsd"`
 	SpotUSDC            float64    `json:"spotUsdc"`
+}
+
+// OpenOrder is a resting order on an account.
+type OpenOrder struct {
+	Coin    string  `json:"coin"`
+	Side    string  `json:"side"` // "buy" | "sell"
+	Sz      float64 `json:"sz"`
+	LimitPx float64 `json:"limitPx"`
+	Oid     int64   `json:"oid"`
+}
+
+// AccountSnapshot is the full read of one HL account used to build the frontend
+// view (and to merge across shard accounts). Richer than PositionsSnapshot: it
+// adds withdrawable and open orders.
+type AccountSnapshot struct {
+	SpotUSDC            float64
+	PerpAccountValueUSD float64
+	Withdrawable        float64
+	Perp                []Position
+	OpenOrders          []OpenOrder
 }
 
 type Account interface {
@@ -65,6 +89,7 @@ type Account interface {
 	SetLeverage(ctx context.Context, coin string, leverage int, isCross bool) error
 	SetAbstraction(ctx context.Context, mode string) error
 	Positions(ctx context.Context) (PositionsSnapshot, error)
+	AccountSnapshot(ctx context.Context) (AccountSnapshot, error)
 }
 
 // Abstraction modes for SetAbstraction. "disabled" = standard mode, which keeps
@@ -384,16 +409,59 @@ func (a *realAccount) Positions(ctx context.Context) (PositionsSnapshot, error) 
 	}
 	snap.PerpAccountValueUSD, _ = strconv.ParseFloat(us.MarginSummary.AccountValue, 64)
 	for _, ap := range us.AssetPositions {
-		szi, _ := strconv.ParseFloat(ap.Position.Szi, 64)
-		var entry float64
-		if ap.Position.EntryPx != nil {
-			entry, _ = strconv.ParseFloat(*ap.Position.EntryPx, 64)
-		}
-		pnl, _ := strconv.ParseFloat(ap.Position.UnrealizedPnl, 64)
-		snap.Perp = append(snap.Perp, Position{Coin: ap.Position.Coin, Szi: szi, EntryPx: entry, UnrealizedPnl: pnl})
+		snap.Perp = append(snap.Perp, mapPosition(ap.Position))
 	}
 	if spot, err := a.SpotUSDC(ctx); err == nil {
 		snap.SpotUSDC = spot
+	}
+	return snap, nil
+}
+
+// mapPosition converts a go-hyperliquid position into our Position, parsing the
+// string-encoded numeric fields (liquidationPx can be null for a flat account).
+func mapPosition(p gohl.Position) Position {
+	szi, _ := strconv.ParseFloat(p.Szi, 64)
+	pnl, _ := strconv.ParseFloat(p.UnrealizedPnl, 64)
+	marginUsed, _ := strconv.ParseFloat(p.MarginUsed, 64)
+	positionValue, _ := strconv.ParseFloat(p.PositionValue, 64)
+	var entry, liq float64
+	if p.EntryPx != nil {
+		entry, _ = strconv.ParseFloat(*p.EntryPx, 64)
+	}
+	if p.LiquidationPx != nil {
+		liq, _ = strconv.ParseFloat(*p.LiquidationPx, 64)
+	}
+	return Position{
+		Coin: p.Coin, Szi: szi, EntryPx: entry, UnrealizedPnl: pnl,
+		Leverage: p.Leverage.Value, MarginUsed: marginUsed,
+		PositionValue: positionValue, LiquidationPx: liq,
+	}
+}
+
+func (a *realAccount) AccountSnapshot(ctx context.Context) (AccountSnapshot, error) {
+	var snap AccountSnapshot
+	us, err := a.ex.Info().UserState(ctx, a.addr)
+	if err != nil {
+		return snap, err
+	}
+	snap.PerpAccountValueUSD, _ = strconv.ParseFloat(us.MarginSummary.AccountValue, 64)
+	snap.Withdrawable, _ = strconv.ParseFloat(us.Withdrawable, 64)
+	for _, ap := range us.AssetPositions {
+		snap.Perp = append(snap.Perp, mapPosition(ap.Position))
+	}
+	if spot, err := a.SpotUSDC(ctx); err == nil {
+		snap.SpotUSDC = spot
+	}
+	if oo, err := a.ex.Info().OpenOrders(ctx, a.addr); err == nil {
+		for _, o := range oo {
+			side := "buy"
+			if o.Side == "A" { // HL: "B"=bid/buy, "A"=ask/sell
+				side = "sell"
+			}
+			snap.OpenOrders = append(snap.OpenOrders, OpenOrder{
+				Coin: o.Coin, Side: side, Sz: o.Size, LimitPx: o.LimitPx, Oid: o.Oid,
+			})
+		}
 	}
 	return snap, nil
 }

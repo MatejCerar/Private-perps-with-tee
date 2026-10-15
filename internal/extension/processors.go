@@ -310,6 +310,11 @@ func (e *Extension) processWithdraw(a teetypes.Action, df *instruction.DataFixed
 // batcher. Returns a pending response (BalanceUsd is the post-debit balance;
 // PendingPayout flags the "paid out privately in ~N" state). Refunds on reject.
 func (e *Extension) enqueuePrivateWithdraw(a teetypes.Action, df *instruction.DataFixed, user common.Address, usd float64) teetypes.ActionResult {
+	// Fan-in exit (Layer 5): in split mode reclaim denomination chunks from across
+	// the user's funded shards back to the treasury, mirroring the fan-out funding.
+	if config.SplitDeposits && e.signerFactory == nil {
+		return e.enqueueSplitWithdraw(a, df, user, usd)
+	}
 	if !config.IsDenomination(usd) {
 		return buildResult(a, df, nil, 0, fmt.Errorf("withdraw %.2f is not an allowed denomination %v (private withdraw requires fixed amounts so the payout cannot be amount-correlated)", usd, config.Denominations))
 	}

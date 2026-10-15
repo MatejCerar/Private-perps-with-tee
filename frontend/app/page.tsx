@@ -30,6 +30,8 @@ import {
 import { decodeResultData, extractInstructionId, pollResult } from "@/lib/tee";
 import {
   RELAYER_ENABLED,
+  SPLIT_MODE,
+  fetchAggregateAccount,
   pollRelayerResult,
   deliverDeposit,
   deliverWithdraw,
@@ -205,21 +207,28 @@ export default function Home() {
   }, []);
 
   // ---- poll the derived HL account ----
+  // Split mode reads the aggregate (merged across shards) from the relayer, keyed
+  // by the user's Flare address; otherwise read the single derived HL account.
   const loadAccount = useCallback(async () => {
-    if (!hlAddress) return;
     try {
+      if (SPLIT_MODE && RELAYER_ENABLED && address) {
+        setAccount(await fetchAggregateAccount(address));
+        return;
+      }
+      if (!hlAddress) return;
       setAccount(await fetchAccount(hlAddress));
     } catch {
       /* transient — keep last */
     }
-  }, [hlAddress]);
+  }, [hlAddress, address]);
 
   useEffect(() => {
-    if (!hlAddress) return;
+    const canLoad = (SPLIT_MODE && RELAYER_ENABLED && !!address) || !!hlAddress;
+    if (!canLoad) return;
     loadAccount();
     const t = setInterval(loadAccount, 5000);
     return () => clearInterval(t);
-  }, [hlAddress, loadAccount, refreshNonce]);
+  }, [hlAddress, address, loadAccount, refreshNonce]);
 
   // Clear the pooled-deposit panel once private funding has landed (balance > 0).
   useEffect(() => {

@@ -19,10 +19,11 @@ import (
 // delay). The ledger was already debited at request time, so a payout only moves HL
 // funds; on failure it refunds the ledger and retries.
 
-// reclaimToTreasury unwinds one user's derived HL account back to the shared
-// treasury (the exit's funding origin). Caller holds the user lock.
-func (e *Extension) reclaimToTreasury(ctx context.Context, user common.Address, denom float64) error {
-	acct, err := e.accountFor(user)
+// reclaimToTreasury unwinds one of a user's shard HL accounts back to the shared
+// treasury (the exit's funding origin). Shard 0 is the primary account. Caller
+// holds the user lock.
+func (e *Extension) reclaimToTreasury(ctx context.Context, user common.Address, shard int, denom float64) error {
+	acct, err := e.accountForShard(user, shard)
 	if err != nil {
 		return fmt.Errorf("deriving account: %w", err)
 	}
@@ -80,13 +81,13 @@ func (e *Extension) payoutOne(ctx context.Context, user common.Address, shard in
 	mu := e.userMutex(user)
 	mu.Lock()
 	defer mu.Unlock()
-	if err := e.reclaimToTreasury(ctx, user, denom); err != nil {
-		logger.Warnf("payout batcher: reclaim for %s failed (will retry): %v", user.Hex(), err)
+	if err := e.reclaimToTreasury(ctx, user, shard, denom); err != nil {
+		logger.Warnf("payout batcher: reclaim for %s shard %d failed (will retry): %v", user.Hex(), shard, err)
 		e.withdrawPool.Fail(user, shard)
 		return false
 	}
 	e.withdrawPool.Complete(user, shard)
-	logger.Infof("payout batcher: settled withdraw for %s (%.2f reclaimed privately)", user.Hex(), denom)
+	logger.Infof("payout batcher: settled withdraw for %s shard %d (%.2f reclaimed privately)", user.Hex(), shard, denom)
 	return true
 }
 

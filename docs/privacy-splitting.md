@@ -51,10 +51,17 @@ against `aggregateHLTotalUSD` = Σ real equity across shards 0..depth, so split
 funds on shards 1..N are no longer clawed back. `shardDepth` uses an in-memory
 high-water mark and, on a cold cache (after an enclave restart), probes shards
 1..MaxShards once to rediscover funded shards - so split balances survive a restart
-with no persisted state. The FE balance already comes from the (aggregate) ledger,
-so no FE change. Not yet done: merging per-shard *positions* into one aggregate
-position view in `/state` (the balance aggregates; the positions list still reports
-per primary account).
+with no persisted state.
+Positions-merge (BUILT + tested): the enclave serves `GET /account?user=` (proxied
+by the relayer at `GET /tee/account`) returning one aggregate view - summed
+balance/withdrawable, concatenated open orders, and positions merged per coin
+(summed size/PnL/margin/notional, size-weighted entry, notional-weighted liq). The
+FE reads this one endpoint in split mode (`NEXT_PUBLIC_SPLIT_MODE=true`) instead of
+querying HL per address, so it shows one balance + one position per coin and never
+learns the shard addresses. CAVEAT: the read endpoint is currently unauthenticated
+(fine behind the trusted local relayer for the demo); production must gate it to an
+EIP-191 signature the enclave recovers to `user`, else it re-leaks the trading
+activity the split hides.
 
 **Layer 4 - fan-out trading (BUILT + tested).** `placeOrderFanOut` routes an order
 across the user's funded shards: opening orders are sized proportional to each
@@ -68,9 +75,14 @@ identical to the single-account path, and the whole path is gated on
 Gotcha: min-order size still caps how small a shard can trade; tiny orders collapse
 onto the largest shard via the fallback. Not yet live-tested against HL testnet.
 
-**Layer 5 - withdraw fan-in.** `processWithdraw` reclaims from shards back to the
-treasury across a shuffled/delayed batch (mirror of funding), refunding the ledger
-on expiry (existing self-heal applies).
+**Layer 5 - withdraw fan-in (BUILT + tested).** In split mode `enqueueSplitWithdraw`
+decomposes the amount into denomination chunks and packs one chunk per funded shard
+(largest chunk to largest-balance shard), enqueuing each into the withdraw pool; the
+payout batcher reclaims each shard->treasury across the shuffled/delayed batch
+(mirror of funding), refunding the ledger on expiry (existing self-heal). Only the
+packed total is debited; any amount that cannot be packed onto a shard this round is
+left spendable and reported as the remainder (the request never hard-fails on
+packing). `reclaimToTreasury` is shard-aware.
 
 ## Known limits (unchanged)
 
