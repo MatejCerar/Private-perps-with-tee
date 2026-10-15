@@ -10,6 +10,7 @@ export function TxModal(props: {
   maxDeposit: number;
   busy: boolean;
   privacy: boolean;
+  split?: boolean;
   denominations: number[];
   onAmount: (v: string) => void;
   onMax: () => void;
@@ -20,15 +21,22 @@ export function TxModal(props: {
   const isDep = props.kind === "deposit";
   const amt = num(props.amount);
   const room = Math.max(0, props.maxDeposit - props.balance);
-  // In privacy mode deposits are restricted to fixed denominations.
-  const fixedDenoms = isDep && props.privacy;
+  // Non-split privacy mode locks deposits to fixed denominations (read-only input).
+  // Split mode accepts any amount >= the smallest denomination, so the input is
+  // free and the denominations become quick-fill chips.
+  const minDenom = props.denominations.length ? Math.min(...props.denominations) : 0;
+  const fixedDenoms = isDep && props.privacy && !props.split;
   const depositChips = fixedDenoms
     ? props.denominations.map((d) => String(d))
-    : ["25", "50", "100", "Max"];
+    : props.split
+      ? [...props.denominations.map((d) => String(d)), "Max"]
+      : ["25", "50", "100", "Max"];
 
   let errorText = "";
   if (isDep && props.balance + amt > props.maxDeposit)
     errorText = `Exceeds the $${props.maxDeposit} per-wallet testnet cap.`;
+  if (isDep && props.split && amt > 0 && amt < minDenom)
+    errorText = `Minimum deposit is $${minDenom}.`;
   if (!isDep && amt > props.withdrawable) errorText = "More than your withdrawable balance.";
   const valid = amt > 0 && !errorText && !props.busy;
 
@@ -65,11 +73,13 @@ export function TxModal(props: {
           </button>
         </div>
         <div style={css("font-size:12.5px;color:#777777;line-height:1.5;margin-bottom:18px;")}>
-          {isDep
-            ? fixedDenoms
+          {!isDep
+            ? "Unwinds on Hyperliquid, then releases your test USDC back to your Coston wallet (request + release signatures)."
+            : fixedDenoms
               ? "Mints test USDC to your wallet and escrows it on Coston. Your Hyperliquid account is then funded privately, batched with others on a short delay. No real value."
-              : "Mints test USDC to your wallet, escrows it on Coston, then the treasury funds your Hyperliquid account. A couple of wallet signatures; ~15s. No real value."
-            : "Unwinds on Hyperliquid, then releases your test USDC back to your Coston wallet (request + release signatures)."}
+              : props.split
+                ? "Mints test USDC and escrows it on Coston. Your deposit is then split across several separate Hyperliquid accounts and funded on a short, randomized delay. Any amount $10+; any sub-unit remainder is kept as credit. No real value."
+                : "Mints test USDC to your wallet, escrows it on Coston, then the treasury funds your Hyperliquid account. A couple of wallet signatures; ~15s. No real value."}
         </div>
 
         <div
@@ -144,6 +154,17 @@ export function TxModal(props: {
           >
             Private deposits use fixed amounts so your deposit blends into the batch. Pick one
             above.
+          </div>
+        )}
+
+        {isDep && props.split && (
+          <div
+            style={css(
+              "font-size:11.5px;color:#777777;line-height:1.5;margin-bottom:14px;",
+            )}
+          >
+            Type any amount (min ${minDenom}), or tap a quick amount. Your deposit is split across
+            several separate private accounts; the sub-unit remainder is kept as credit.
           </div>
         )}
 

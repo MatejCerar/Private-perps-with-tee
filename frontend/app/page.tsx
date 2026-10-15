@@ -664,9 +664,11 @@ export default function Home() {
     if (!modal || busy) return;
     const amt = num(modal.amount);
     if (modal.kind === "deposit") {
-      // In privacy mode deposits must land on a fixed denomination; snap to the
-      // nearest so the batch stays anonymity-preserving.
-      const depositAmt = PRIVACY_MODE ? nearestDenomination(amt) : amt;
+      // Non-split privacy mode: deposits must land on a fixed denomination; snap to
+      // the nearest so the batch stays anonymity-preserving. Split mode accepts any
+      // amount >= the smallest denomination (the enclave decomposes it across shards
+      // and keeps the sub-unit remainder as credit), so pass it through unchanged.
+      const depositAmt = PRIVACY_MODE && !SPLIT_MODE ? nearestDenomination(amt) : amt;
       if (depositAmt <= 0 || balance + depositAmt > MAX_DEPOSIT_USD) return;
       setModal(null);
       doDeposit(depositAmt);
@@ -907,6 +909,7 @@ export default function Home() {
           maxDeposit={MAX_DEPOSIT_USD}
           busy={busy}
           privacy={PRIVACY_MODE}
+          split={SPLIT_MODE}
           denominations={DENOMINATIONS}
           onAmount={(v) => setModal((m) => (m ? { ...m, amount: v } : m))}
           onMax={modalSetMax}
