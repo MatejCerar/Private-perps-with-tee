@@ -55,11 +55,11 @@ func (e *Extension) Reconcile(ctx context.Context, user common.Address) (float64
 	}
 	defer mu.Unlock()
 
-	acct, err := e.accountFor(user)
-	if err != nil {
-		return 0, err
-	}
-	real, err := hlTotalUSD(ctx, acct)
+	// Aggregated read (Layer 3): compare the ledger against the user's TOTAL HL
+	// equity summed across all shard accounts, not just shard 0. Without this, a
+	// split deposit's funds on shards 1..N look like "missing" equity and the
+	// reconciler claws the ledger back down to shard 0's value.
+	real, err := e.aggregateHLTotalUSD(ctx, user)
 	if err != nil {
 		return 0, err
 	}

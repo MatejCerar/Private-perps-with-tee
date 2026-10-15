@@ -46,18 +46,27 @@ grown as deposits split). Config: `HL_SPLIT_DEPOSITS`, `HL_MAX_SHARDS` (e.g. 15)
   treasury (existing `fundUserAccount`, to the shard address) and credits the user
   ledger by the chunk.
 
-**Layer 3 - aggregated read.** `stateHandler` / `fetchAccount` sum across the user's
-shards: total balance = Σ shard balances; positions = merge same-coin positions
-(sum size, notional-weighted entry, summed PnL/margin; recompute an aggregate
-liquidation estimate). The FE already shows one balance/position, so no FE change if
-`/state` returns the aggregate.
+**Layer 3 - aggregated read (BUILT + tested).** `reconcile` compares the ledger
+against `aggregateHLTotalUSD` = Σ real equity across shards 0..depth, so split
+funds on shards 1..N are no longer clawed back. `shardDepth` uses an in-memory
+high-water mark and, on a cold cache (after an enclave restart), probes shards
+1..MaxShards once to rediscover funded shards - so split balances survive a restart
+with no persisted state. The FE balance already comes from the (aggregate) ledger,
+so no FE change. Not yet done: merging per-shard *positions* into one aggregate
+position view in `/state` (the balance aggregates; the positions list still reports
+per primary account).
 
-**Layer 4 - fan-out trading.** `processPlaceOrder` splits `size` across shards that
-hold free margin, proportional to each shard's balance, placing a sub-order on each;
-skip shards whose slice is below HL's ~$10 min order (route their share to larger
-shards). `processCancel` cancels across shards. Aggregate the fills into one result.
-Gotcha: min-order size caps how small a shard can trade - with 25-denom shards, a
-coin needs size ≥ ~$10, so very small shards may sit idle for a given trade.
+**Layer 4 - fan-out trading (BUILT + tested).** `placeOrderFanOut` routes an order
+across the user's funded shards: opening orders are sized proportional to each
+shard's balance, reduce-only orders proportional to the position each shard holds.
+Market orders fan out; limit orders stay on the largest shard so their id stays
+cancellable. A sub-order HL rejects (e.g. a slice below the ~$10 min) has its size
+re-placed on the largest shard in one fallback pass. `processCancel` cancels the id
+across all shards best-effort. The degenerate case (only shard 0 funded) is
+identical to the single-account path, and the whole path is gated on
+`HL_SPLIT_DEPOSITS` so the proven single-account path is untouched when off.
+Gotcha: min-order size still caps how small a shard can trade; tiny orders collapse
+onto the largest shard via the fallback. Not yet live-tested against HL testnet.
 
 **Layer 5 - withdraw fan-in.** `processWithdraw` reclaims from shards back to the
 treasury across a shuffled/delayed batch (mirror of funding), refunding the ledger

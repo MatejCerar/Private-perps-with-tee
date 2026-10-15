@@ -403,6 +403,63 @@ func (e *Extension) noteShardCount(user common.Address, n int) {
 	}
 }
 
+// shardDustUSD is the floor below which a shard's HL balance is treated as empty
+// (float dust / unfunded), used by the aggregated read and fan-out trading.
+const shardDustUSD = 1.0
+
+// shardDepth returns how many shard accounts to aggregate over for a user. With
+// split off (or in tee-wallet mode, where sharding is unavailable) it is 1 - just
+// shard 0, identical to the pre-split behaviour. With split on it uses the
+// in-memory high-water mark; on a cold cache (e.g. after an enclave restart) it
+// probes shards 1..MaxShards once to rediscover funded shards, so split balances
+// survive a restart without any persisted state. The discovered depth is cached.
+func (e *Extension) shardDepth(ctx context.Context, user common.Address) int {
+	if !config.SplitDeposits || e.signerFactory != nil {
+		return 1
+	}
+	e.mu.RLock()
+	n := e.shardCount[user]
+	e.mu.RUnlock()
+	if n > 0 {
+		return n
+	}
+	highest := 0
+	for i := 1; i < config.MaxShards; i++ {
+		acct, err := e.accountForShard(user, i)
+		if err != nil {
+			continue
+		}
+		if v, err := hlTotalUSD(ctx, acct); err == nil && v > shardDustUSD {
+			highest = i
+		}
+	}
+	depth := highest + 1
+	e.noteShardCount(user, depth)
+	return depth
+}
+
+// aggregateHLTotalUSD sums the real HL equity (perp value + spot USDC) across all
+// of a user's shard accounts. This is the Layer 3 aggregated read: it lets the
+// reconciler compare the ledger against the user's TOTAL on-HL funds rather than
+// just shard 0, so split-deposit funds are not clawed back out of the ledger. In
+// single-account mode it is exactly shard 0.
+func (e *Extension) aggregateHLTotalUSD(ctx context.Context, user common.Address) (float64, error) {
+	depth := e.shardDepth(ctx, user)
+	var total float64
+	for i := 0; i < depth; i++ {
+		acct, err := e.accountForShard(user, i)
+		if err != nil {
+			return 0, err
+		}
+		v, err := hlTotalUSD(ctx, acct)
+		if err != nil {
+			return 0, err
+		}
+		total += v
+	}
+	return total, nil
+}
+
 func (e *Extension) stateHandler(w http.ResponseWriter, r *http.Request) {
 	e.mu.RLock()
 	views := make([]types.AccountView, 0, len(e.accounts))

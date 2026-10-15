@@ -156,6 +156,13 @@ func (e *Extension) processPlaceOrder(a teetypes.Action, df *instruction.DataFix
 		return buildResult(a, df, nil, 0, fmt.Errorf("orderType must be market or limit"))
 	}
 
+	// Fan-out execution (Layer 4): in split mode the user's funds are spread across
+	// several shard accounts, so route the order across them. The degenerate case
+	// (only shard 0 funded) behaves exactly like the single-account path below.
+	if config.SplitDeposits && e.signerFactory == nil {
+		return e.placeOrderFanOut(a, df, user, req)
+	}
+
 	acct, err := e.accountFor(user)
 	if err != nil {
 		return buildResult(a, df, nil, 0, err)
@@ -234,6 +241,16 @@ func (e *Extension) processCancel(a teetypes.Action, df *instruction.DataFixed) 
 	}
 	if req.Coin == "" || req.OrderID == 0 {
 		return buildResult(a, df, nil, 0, fmt.Errorf("coin and orderId required"))
+	}
+	// Fan-out cancel (Layer 4): the order id may live on any shard, so cancel across
+	// all of them best-effort in split mode.
+	if config.SplitDeposits && e.signerFactory == nil {
+		if err := e.cancelFanOut(context.Background(), user, req.Coin, req.OrderID); err != nil {
+			return buildResult(a, df, nil, 0, fmt.Errorf("cancelling: %w", err))
+		}
+		e.led.MarkCancelled(user, req.OrderID)
+		data, _ := json.Marshal(types.CancelResponse{Cancelled: true})
+		return buildResult(a, df, data, 1, nil)
 	}
 	acct, err := e.accountFor(user)
 	if err != nil {
