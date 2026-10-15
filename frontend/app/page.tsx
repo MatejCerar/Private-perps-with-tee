@@ -54,6 +54,7 @@ import { Chart } from "@/components/Chart";
 import { MarketsSidebar } from "@/components/MarketsSidebar";
 import { PositionsPanel } from "@/components/PositionsPanel";
 import { BalanceCard } from "@/components/BalanceCard";
+import { ShardAccounts } from "@/components/ShardAccounts";
 import { TxModal } from "@/components/TxModal";
 import { StatusToast, type RunKind, type RunState } from "@/components/StatusToast";
 import { SelfFundPanel } from "@/components/SelfFundPanel";
@@ -889,6 +890,8 @@ export default function Home() {
               onDeposit={openDeposit}
               onWithdraw={openWithdraw}
             />
+
+            <ShardAccounts user={address} />
 
             <ActivityList entries={activity} />
           </div>

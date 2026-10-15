@@ -166,6 +166,7 @@ func main() {
 	mux.HandleFunc("POST /tee/cancel", c.wrap(c.handleCancel))
 	mux.HandleFunc("GET /tee/result/{id}", c.wrap(c.handleResult))
 	mux.HandleFunc("GET /tee/account", c.wrap(c.handleAccount))
+	mux.HandleFunc("GET /tee/shards", c.wrap(c.handleShards))
 	mux.HandleFunc("GET /tee/health", c.wrap(c.handleHealth))
 	// CORS preflight for any /tee/* route.
 	mux.HandleFunc("OPTIONS /tee/{rest...}", c.wrap(func(http.ResponseWriter, *http.Request) (any, int, error) {
@@ -359,6 +360,27 @@ func (c config) handleAccount(_ http.ResponseWriter, r *http.Request) (any, int,
 		return nil, http.StatusBadRequest, fmt.Errorf("invalid or missing user address")
 	}
 	resp, err := http.Get(fmt.Sprintf("%s/account?user=%s", c.extensionURL, user))
+	if err != nil {
+		return nil, http.StatusBadGateway, fmt.Errorf("extension: %w", err)
+	}
+	defer resp.Body.Close()
+	rb, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, resp.StatusCode, fmt.Errorf("extension: %s", string(rb))
+	}
+	var out json.RawMessage = rb
+	return out, http.StatusOK, nil
+}
+
+// handleShards proxies the enclave's per-shard list (index, HL address, balance)
+// so the frontend can show where a deposit fanned out. Debug/operator view - it
+// reveals shard addresses, so keep it off a privacy-critical public deployment.
+func (c config) handleShards(_ http.ResponseWriter, r *http.Request) (any, int, error) {
+	user := r.URL.Query().Get("user")
+	if !common.IsHexAddress(user) {
+		return nil, http.StatusBadRequest, fmt.Errorf("invalid or missing user address")
+	}
+	resp, err := http.Get(fmt.Sprintf("%s/shards?user=%s", c.extensionURL, user))
 	if err != nil {
 		return nil, http.StatusBadGateway, fmt.Errorf("extension: %w", err)
 	}

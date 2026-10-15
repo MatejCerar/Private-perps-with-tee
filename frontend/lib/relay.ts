@@ -92,6 +92,23 @@ export const deliverOrder = (user: string, order: unknown) =>
 export const deliverCancel = (user: string, cancel: unknown) =>
   deliver("/tee/cancel", { user, cancel });
 
+export type ShardAccount = { shard: number; hlAddress: string; balanceUsd: number };
+
+// fetchShards lists the user's shard accounts (index, HL address, balance) so the
+// UI can show where a deposit fanned out and link each account to the HL explorer.
+export async function fetchShards(user: string): Promise<ShardAccount[]> {
+  const res = await fetch(`${RELAYER_URL}/tee/shards?user=${user}`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`relayer shards failed (${res.status})`);
+  const arr = (await res.json()) as unknown[];
+  return (arr ?? [])
+    .map((s) => s as Record<string, unknown>)
+    .map((s) => ({
+      shard: n(s.shard),
+      hlAddress: String(s.hlAddress ?? ""),
+      balanceUsd: n(s.balanceUsd),
+    }));
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // Poll the relayer (which proxies the TEE proxy) for a finished result.
