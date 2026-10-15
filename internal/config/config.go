@@ -124,6 +124,10 @@ var (
 	FundDelayMaxSeconds = 60
 	// FundTickSeconds is how often the batch funder wakes to drain due deposits.
 	FundTickSeconds = 5
+	// MaxFundingAgeSeconds drops a pending deposit/withdraw whose funding kept
+	// failing for this long (e.g. the treasury could not fund it), so an
+	// un-fundable entry never blocks the account forever. 0 disables expiry.
+	MaxFundingAgeSeconds = 120
 )
 
 // LoadArbConfig reads Arbitrum-side settings for the bridge funding path.
@@ -217,6 +221,11 @@ func LoadArbConfig() {
 	if v := os.Getenv("HL_FUND_TICK_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			FundTickSeconds = n
+		}
+	}
+	if v := os.Getenv("HL_MAX_FUNDING_AGE_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			MaxFundingAgeSeconds = n
 		}
 	}
 }

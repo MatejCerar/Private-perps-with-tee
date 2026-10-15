@@ -45,6 +45,15 @@ func (e *Extension) drainDuePayouts(ctx context.Context) int {
 	if e.withdrawPool == nil {
 		return 0
 	}
+	// Self-heal: drop withdrawals that stayed un-fundable too long so they never
+	// block the account forever. A withdraw debits the ledger up front, so refund
+	// it on expiry (the HL reclaim never happened).
+	if config.MaxFundingAgeSeconds > 0 {
+		for _, it := range e.withdrawPool.Expire(time.Duration(config.MaxFundingAgeSeconds) * time.Second) {
+			e.led.Credit(it.User, it.Denom)
+			logger.Warnf("payout batcher: expired un-fundable withdraw for %s after %ds; refunded %.2f to the ledger", it.User.Hex(), config.MaxFundingAgeSeconds, it.Denom)
+		}
+	}
 	batch := e.withdrawPool.DueBatch(config.BatchMin)
 	if len(batch) == 0 {
 		return 0

@@ -150,6 +150,25 @@ func (p *DepositPool) Fail(user common.Address) {
 	}
 }
 
+// Expire drops entries that have been pending longer than maxAge (funding kept
+// failing, e.g. the treasury could not fund them) and returns the removed entries.
+// This is the self-heal that stops an un-fundable deposit/withdraw from blocking
+// the account forever. The caller handles any compensation (the withdraw funder
+// refunds the ledger, since a withdraw debits it up front).
+func (p *DepositPool) Expire(maxAge time.Duration) []pendingFunding {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := time.Now()
+	var dropped []pendingFunding
+	for user, it := range p.items {
+		if now.Sub(it.DepositedAt) > maxAge {
+			dropped = append(dropped, *it)
+			delete(p.items, user)
+		}
+	}
+	return dropped
+}
+
 // PendingTotal is the sum of all enqueued (not-yet-credited) denominations. The
 // deposit cap check adds this so pending escrow still counts against the cap.
 func (p *DepositPool) PendingTotal() float64 {

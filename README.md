@@ -21,6 +21,41 @@ funded or unwound.
 > **unlinkability**, and its strength is the batch size. See
 > [docs/privacy.md](docs/privacy.md) for the full, honest threat model.
 
+## Privacy model: what it hides, and what it can't
+
+Each user gets a **separate, seed-derived Hyperliquid account** (not a subaccount -
+HL subaccounts are publicly linked to their master, which would leak the link). The
+unlinkability between your Flare wallet and that trading account rests on three
+things, all built in:
+
+- **Fixed denominations** (`HL_DENOMINATIONS`, e.g. `25,100,500`). You cannot
+  deposit an arbitrary amount; every deposit is one of a few uniform sizes, so the
+  amount itself is not a fingerprint. A whale deposits many `500`s, same shape as
+  everyone else's `500`s.
+- **Batched funding = an anonymity set** (`HL_BATCH_MIN`). The treasury funds
+  derived accounts only in shuffled groups of ≥ K identical-denomination deposits,
+  so no observer can say which funded account is yours.
+- **Randomized, delayed funding** (`HL_FUND_DELAY_*`). Funding is decorrelated in
+  time from your on-chain deposit.
+
+**The honest limits (no pool escapes these):**
+
+- Privacy equals the **size of the anonymity set** = how many *other* people
+  deposited the same denomination in the same window. With `HL_BATCH_MIN=1` or if
+  you are the only depositor, K=1 and there is **no privacy**. A mixer with one user
+  is not a mixer.
+- A **whale is an outlier.** Fixed denominations hide *which* `500` is yours, but if
+  you alone push, say, $1M through in a quiet week, your aggregate volume and timing
+  still point at you - you dominate the flow. The guarantee is "unlinkable *within
+  the anonymity set*", not "hide arbitrary large transfers".
+
+**To strengthen it:** raise `HL_BATCH_MIN` (bigger crowd; needs real deposit
+volume, optionally with a max-wait so batches still fund when quiet), keep
+denominations coarse and uniform, and add **decoy cover-traffic** (the treasury
+funds dummy accounts to pad the set so real deposits blend in even at low volume).
+Demo defaults use a small batch and short delay so the flow is visible; production
+wants a large batch and a long window.
+
 ## How it works, in one picture
 
 ```
@@ -39,6 +74,27 @@ User (Flare wallet)                         Trusted Execution Environment
   delayed, so it can't be time/amount-correlated.
 - **Trades** (long/short, leverage, cancel) are on-chain instructions relayed to the
   TEE, which signs and executes them on Hyperliquid.
+
+## What is the TEE (and why it's here)
+
+A **TEE** (Trusted Execution Environment) is a hardware-isolated enclave that runs
+code no one - not even the machine's operator - can read or tamper with, and that
+can **attest** (cryptographically prove) exactly which code is running. This is what
+makes the product possible:
+
+- The per-user Hyperliquid **key is created and used only inside the enclave**, so
+  the operator never holds it and can't move your funds without your signed
+  instruction.
+- The enclave knows the Flare↔HL mapping internally but **never publishes it**, so
+  the link stays private.
+- On Flare this is **Flare Confidential Compute (FCC)**: the enclave's code hash is
+  registered on-chain and its results are attested, so anyone can verify the thing
+  holding funds is exactly the reviewed code.
+
+The trust ceiling is therefore "the attested enclave + its operator", not
+"trustless" - the honest framing is in [docs/privacy.md](docs/privacy.md). (This
+demo runs the real enclave but delivers instructions via a trusted local relayer
+instead of the on-chain consensus relay; see [docs/DEPLOY.md](docs/DEPLOY.md).)
 
 ## Quick links
 

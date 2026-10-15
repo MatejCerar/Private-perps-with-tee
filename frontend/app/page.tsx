@@ -146,10 +146,14 @@ export default function Home() {
   const dismissTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ---- derived ----
-  const available = account ? account.spotUsdc : 0;
-  const inPositions = account ? account.perpAccountValue : 0;
+  // Available = free funds you can trade/withdraw = spot + the perp account's
+  // free margin (withdrawable). In positions = only the margin actually locked by
+  // open positions (perpAccountValue - withdrawable), so closing a position frees
+  // its margin back to Available instead of showing it stuck "in positions".
+  const available = account ? account.spotUsdc + account.withdrawable : 0;
+  const inPositions = account ? Math.max(0, account.perpAccountValue - account.withdrawable) : 0;
   const balance = available + inPositions;
-  const withdrawable = account ? account.spotUsdc + account.withdrawable : balance;
+  const withdrawable = available;
   const everDeposited = !!hlAddress || balance > 0 || (account?.positions.length ?? 0) > 0;
   const busy =
     !!run &&

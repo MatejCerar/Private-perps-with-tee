@@ -49,6 +49,13 @@ func (e *Extension) drainDueBatch(ctx context.Context) int {
 	if e.depositPool == nil {
 		return 0
 	}
+	// Self-heal: drop deposits that have been un-fundable for too long so they
+	// never block the account permanently (e.g. the treasury could not fund them).
+	if config.MaxFundingAgeSeconds > 0 {
+		for _, it := range e.depositPool.Expire(time.Duration(config.MaxFundingAgeSeconds) * time.Second) {
+			logger.Warnf("batch funder: expired un-fundable deposit for %s after %ds (no ledger impact; account freed)", it.User.Hex(), config.MaxFundingAgeSeconds)
+		}
+	}
 	batch := e.depositPool.DueBatch(config.BatchMin)
 	if len(batch) == 0 {
 		return 0
