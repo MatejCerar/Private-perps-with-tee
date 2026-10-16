@@ -124,7 +124,9 @@ export default function Home() {
   const [pooledDeposit, setPooledDeposit] = useState<{
     address?: string;
     amountUsd: number;
+    fundedUsd: number; // the denominable part that actually funds HL (< amountUsd if there is a remainder)
     estimatedSeconds: number;
+    baselineBalance: number; // balance at deposit time, so we clear only when THIS funding lands
   } | null>(null);
 
   // Pooled/delayed payout state: set when a withdraw returns pendingPayout:true.
@@ -157,6 +159,12 @@ export default function Home() {
   const inPositions = account ? Math.max(0, account.perpAccountValue - account.withdrawable) : 0;
   const balance = available + inPositions;
   const withdrawable = available;
+  // Track the live balance so a deposit can record its pre-funding baseline (used to
+  // dismiss the funding countdown only when THIS deposit's funds actually land).
+  const balanceRef = useRef(0);
+  useEffect(() => {
+    balanceRef.current = balance;
+  }, [balance]);
   const everDeposited = !!hlAddress || balance > 0 || (account?.positions.length ?? 0) > 0;
   const busy =
     !!run &&
@@ -231,10 +239,26 @@ export default function Home() {
     return () => clearInterval(t);
   }, [hlAddress, address, loadAccount, refreshNonce]);
 
-  // Clear the pooled-deposit panel once private funding has landed (balance > 0).
+  // Clear the pooled-deposit panel when THIS deposit's funding actually lands, i.e.
+  // the balance has risen by most of the funded amount above the pre-deposit
+  // baseline. (The old check "balance > 0" dismissed it instantly whenever the user
+  // already had any balance, so the countdown never showed on a top-up.)
   useEffect(() => {
-    if (pooledDeposit && balance > 0) setPooledDeposit(null);
+    if (!pooledDeposit) return;
+    const landed = balance >= pooledDeposit.baselineBalance + pooledDeposit.fundedUsd * 0.9;
+    if (landed) setPooledDeposit(null);
   }, [pooledDeposit, balance]);
+
+  // Safety fallback: never let the funding panel stick forever. Clear it after the
+  // estimated delay plus a grace window (batch tick + HL settle), even if the
+  // balance read is lagging. Keyed on the panel identity so the timer isn't reset
+  // by every balance poll.
+  useEffect(() => {
+    if (!pooledDeposit) return;
+    const ms = Math.max(0, pooledDeposit.estimatedSeconds) * 1000 + 60000;
+    const t = setTimeout(() => setPooledDeposit(null), ms);
+    return () => clearTimeout(t);
+  }, [pooledDeposit]);
 
   // Clear the pooled-withdraw panel after the estimated payout delay elapses (not
   // tied to balance - the balance is already debited when the panel shows).
@@ -487,6 +511,7 @@ export default function Home() {
               selfFundAddress?: string;
               pendingFunding?: boolean;
               estimatedFundingSeconds?: number;
+              fundedUsd?: number;
               hlAddress?: string;
             };
             if (d?.pendingFunding) {
@@ -494,10 +519,12 @@ export default function Home() {
               setPooledDeposit({
                 address: typeof d.hlAddress === "string" ? d.hlAddress : hlAddress,
                 amountUsd: amt,
+                fundedUsd: typeof d.fundedUsd === "number" && d.fundedUsd > 0 ? d.fundedUsd : amt,
                 estimatedSeconds:
                   typeof d.estimatedFundingSeconds === "number"
                     ? d.estimatedFundingSeconds
                     : 0,
+                baselineBalance: balanceRef.current,
               });
             } else if (d?.selfFund && d?.selfFundAddress) {
               setSelfFund({ address: d.selfFundAddress, amountUnits: units, amountUsd: amt });
